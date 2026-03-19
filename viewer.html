@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>LiDAR Point Cloud</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0a0a0f; overflow: hidden; }
+    canvas { display: block; }
+    #ui {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      color: #aaa;
+      font-family: monospace;
+      font-size: 12px;
+      line-height: 1.8;
+      pointer-events: none;
+    }
+    #ui strong { color: #fff; font-size: 13px; }
+    #legend {
+      position: absolute;
+      bottom: 16px;
+      right: 16px;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 4px;
+      font-family: monospace;
+      font-size: 11px;
+      color: #aaa;
+    }
+    #gradient {
+      width: 12px;
+      height: 120px;
+      border-radius: 2px;
+      background: linear-gradient(to bottom, #f7f79e, #31c884, #1a6b8a, #0d1b4b);
+    }
+    .legend-row { display: flex; align-items: center; gap: 6px; }
+    #loading {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #fff;
+      font-family: monospace;
+      font-size: 14px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+<div id="loading">Loading point cloud: 0%</div>
+<div id="ui" style="display:none">
+  <strong id="title">LiDAR — </strong><br>
+  <span id="pt-count"></span><br><br>
+  drag · rotate<br>
+  right-drag · pan<br>
+  scroll · zoom
+</div>
+<div id="legend" style="display:none">
+  <div class="legend-row"><span id="z-max"></span></div>
+  <div class="legend-row">
+    <div id="gradient"></div>
+  </div>
+  <div class="legend-row"><span id="z-min"></span></div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "/three@0.183.2/three.module.min.js",
+    "three/addons/": "/three@0.183.2/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { PCDLoader } from 'three/addons/loaders/PCDLoader.js';
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 100000);
+camera.up.set(0, 0, 1);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+const loader = new PCDLoader();
+
+renderer.setPixelRatio(devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+let sph = { theta: 0.4, phi: 0.5, r: 1000 };
+let target = new THREE.Vector3();
+let drag = false, rightDrag = false, prev = { x: 0, y: 0 };
+let prevPinchDist = null;
+
+function pinchDist(touches) {
+  const dx = touches[0].clientX - touches[1].clientX;
+  const dy = touches[0].clientY - touches[1].clientY;
+  return Math.hypot(dx, dy);
+}
+
+function camPos() {
+  camera.position.set(
+    target.x + sph.r * Math.sin(sph.phi) * Math.sin(sph.theta),
+    target.y + sph.r * Math.sin(sph.phi) * Math.cos(sph.theta) * -1.0,
+    target.z + sph.r * Math.cos(sph.phi)
+  );
+  camera.lookAt(target);
+  renderer.render(scene, camera);
+}
+
+renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
+
+renderer.domElement.addEventListener('mousedown', e => {
+  drag = true; rightDrag = e.button === 2;
+  prev = { x: e.clientX, y: e.clientY };
+});
+
+renderer.domElement.addEventListener('touchstart', e => {
+  if (e.touches.length === 2) {
+    rightDrag = true;
+    prevPinchDist = pinchDist(e.touches);
+    prev = {
+      x: (e.touches[0].clientX + e.touches[1].clientX) / 2,
+      y: (e.touches[0].clientY + e.touches[1].clientY) / 2
+    };
+  } else {
+    rightDrag = false;
+    prevPinchDist = null;
+    prev = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  }
+  drag = true;
+});
+
+['mouseup', 'touchend'].forEach(eventName => {
+  window.addEventListener(eventName, () => drag = false);
+});
+
+window.addEventListener('mousemove', e => {
+  if (!drag) return;
+  const dx = e.clientX - prev.x, dy = e.clientY - prev.y;
+  if (rightDrag) {
+    const right = new THREE.Vector3(Math.cos(sph.theta), 0, -Math.sin(sph.theta));
+    const up = new THREE.Vector3(0, 1, 0);
+    target.addScaledVector(right, -dx * sph.r * 0.001);
+    target.addScaledVector(up, dy * sph.r * 0.001);
+  } else {
+    sph.theta -= dx * 0.005;
+    sph.phi = Math.max(0.05, Math.min(Math.PI * 0.95, sph.phi - dy * 0.005));
+  }
+  prev = { x: e.clientX, y: e.clientY };
+  camPos();
+});
+
+window.addEventListener('touchmove', e => {
+  if (!drag) return;
+  e.preventDefault();
+
+  if (e.touches.length === 2) {
+    const dist = pinchDist(e.touches);
+    if (prevPinchDist !== null) {
+      sph.r *= prevPinchDist / dist;  // pinch in → larger r, pinch out → smaller r
+      sph.r = Math.max(10, Math.min(50000, sph.r));
+    }
+    prevPinchDist = dist;
+  }
+
+  const x = e.touches.length === 2
+    ? (e.touches[0].clientX + e.touches[1].clientX) / 2
+    : e.touches[0].clientX;
+  const y = e.touches.length === 2
+    ? (e.touches[0].clientY + e.touches[1].clientY) / 2
+    : e.touches[0].clientY;
+
+  const dx = x - prev.x, dy = y - prev.y;
+  if (rightDrag) {
+    const right = new THREE.Vector3(Math.cos(sph.theta), 0, -Math.sin(sph.theta));
+    const up = new THREE.Vector3(0, 1, 0);
+    target.addScaledVector(right, -dx * sph.r * 0.001);
+    target.addScaledVector(up, dy * sph.r * 0.001);
+  } else {
+    sph.theta -= dx * 0.005;
+    sph.phi = Math.max(0.05, Math.min(Math.PI * 0.95, sph.phi - dy * 0.005));
+  }
+  prev = { x, y };
+  camPos();
+}, { passive: false });
+
+renderer.domElement.addEventListener('wheel', e => {
+  sph.r *= 1 + e.deltaY * 0.001;
+  sph.r = Math.max(10, Math.min(50000, sph.r));
+  camPos();
+}, { passive: true });
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+function heightColor(t) {
+  // mako-inspired: dark navy -> teal -> yellow-white
+  const stops = [
+    [13, 27, 75],
+    [26, 107, 138],
+    [49, 200, 132],
+    [247, 247, 158]
+  ];
+  t = Math.max(0, Math.min(1, t));
+  const s = t * (stops.length - 1);
+  const i = Math.min(Math.floor(s), stops.length - 2);
+  const f = s - i;
+  return stops[i].map((v, j) => (v + f * (stops[i + 1][j] - v)) / 255);
+}
+
+
+function onPointsLoad(pts) {
+  document.getElementById('loading').textContent = "Processing point cloud";
+
+  const mat = new THREE.PointsMaterial({
+    size: 0.8,
+    vertexColors: true,
+    sizeAttenuation: true
+  });
+
+  scene.add(new THREE.Points(pts.geometry, mat));
+
+  pts.geometry.computeBoundingBox();
+  const box = pts.geometry.boundingBox;
+  console.log(box);
+  box.getCenter(target);
+  sph.r = box.getSize(new THREE.Vector3()).length() * 0.7;
+  camPos();
+
+  const n = pts.geometry.attributes.position.array.length / 3;
+
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('ui').style.display = 'block';
+  document.getElementById('legend').style.display = 'block';
+
+  document.getElementById('pt-count').textContent = n.toLocaleString() + ' points';
+  // document.getElementById('z-max').textContent = Math.round(zMax) + ' m';
+  // document.getElementById('z-min').textContent = Math.round(zMin) + ' m';
+
+  // (function animate() { requestAnimationFrame(animate); renderer.render(scene, camera); })();
+  renderer.render(scene, camera);
+}
+
+function onPointsProgress(e) {
+  const progress = Math.floor((e.loaded / e.total) * 100);
+  document.getElementById('loading').textContent = "Loading point cloud: " + progress.toLocaleString() + "%";
+}
+
+fetch('kullberg.json')
+.then(r => r.json())
+.then(metadata => {
+  console.log(metadata);
+  document.getElementById('z-max').textContent = Math.round(metadata.zMax) + ' m';
+  document.getElementById('z-min').textContent = Math.round(metadata.zMin) + ' m';
+  document.getElementById('title').textContent = "LiDAR - " + metadata.name;
+});
+
+loader.load("kullberg.pcd", onPointsLoad, onPointsProgress);
+
+fetch('trees.json')
+.then(r => r.json())
+.then(treesData => {
+
+  const positions = [];
+
+  for (const t of treesData) {
+    // bottom of stem
+    positions.push(t.x,  t.y, t.z_bottom);
+    // top of crown
+    positions.push(t.x,  t.y, t.z_top);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute(
+    'position',
+    new THREE.Float32BufferAttribute(positions, 3)
+  );
+  // geometry.computeLineDistances();   // required for dashes to work
+
+  const material = new THREE.LineDashedMaterial({
+    color: 0xff2222,
+    dashSize: 0.5,
+    gapSize: 0.25,
+    scale: 2.0
+  });
+
+  const lines = new THREE.LineSegments(geometry, material);
+  lines.computeLineDistances();
+  scene.add(lines);
+
+
+  // --- Spheres at apex ---
+  const sphereGeo = new THREE.SphereGeometry(0.4, 8, 8);
+  const sphereMat = new THREE.MeshBasicMaterial({ color: 0xff2222 });
+  const spheres   = new THREE.InstancedMesh(sphereGeo, sphereMat, treesData.length);
+
+  const matrix = new THREE.Matrix4();
+  treesData.forEach((t, i) => {
+    matrix.setPosition(t.x, t.y, t.z_top);
+    spheres.setMatrixAt(i, matrix);
+  });
+  spheres.instanceMatrix.needsUpdate = true;
+
+  scene.add(spheres);
+
+  renderer.render(scene, camera);
+});
+
+</script>
+</body>
+</html>
