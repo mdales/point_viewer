@@ -117,6 +117,7 @@
     <button class="cm-btn active" data-mode="height">height</button>
     <button class="cm-btn" data-mode="classification">class</button>
     <button class="cm-btn" id="btn-rgb" data-mode="rgb" style="display:none">rgb</button>
+    <button class="cm-btn" id="btn-lc" data-mode="landcover" style="display:none">land cover</button>
   </div>
   <label class="layer-toggle">
     <input type="checkbox" checked data-layer="pointCloud">
@@ -142,6 +143,7 @@
     <div class="legend-row"><span id="z-min"></span></div>
   </div>
   <div id="cls-legend" style="display:none"></div>
+  <div id="lc-legend"  style="display:none"></div>
 </div>
 
 <script type="importmap">
@@ -249,6 +251,25 @@ function pinchDist(touches) {
 const _lodFrustum = new THREE.Frustum();
 const _lodMatrix  = new THREE.Matrix4();
 
+// The point where the camera's look ray intersects the ground plane (Z=0).
+// This is what the user perceives as the screen centre — it differs from
+// `target` whenever the camera is tilted.  Recomputed once per render.
+const _groundFocus = new THREE.Vector2();
+function updateGroundFocus() {
+  // Look direction from camera toward target
+  const dx = target.x - camera.position.x;
+  const dy = target.y - camera.position.y;
+  const dz = target.z - camera.position.z;
+  // Intersect ray with Z=0: camera.z + t*dz = 0 → t = -camera.z / dz
+  if (dz < -1e-6) {  // looking downward — valid intersection
+    const t = -camera.position.z / dz;
+    _groundFocus.set(camera.position.x + t * dx, camera.position.y + t * dy);
+  } else {
+    // Camera looking up or horizontal — fall back to target XY
+    _groundFocus.set(target.x, target.y);
+  }
+}
+
 // Returns the maximum octree depth we want to *display* for this node's spatial
 // region, given the current camera state.  A node is visible iff its depth
 // is ≤ the returned value.
@@ -256,6 +277,7 @@ function computeNodeTargetDepth(node) {
   const tileSize = node.tile.box.max.x - node.tile.box.min.x;
   const cx = (node.box.min.x + node.box.max.x) / 2;
   const cy = (node.box.min.y + node.box.max.y) / 2;
+  // const dist2d = Math.hypot(_groundFocus.x - cx, _groundFocus.y - cy);
   const dist2d = Math.hypot(target.x - cx, target.y - cy);
 
   // Overall zoom depth: how much global detail do we want?
@@ -268,7 +290,8 @@ function computeNodeTargetDepth(node) {
 
   // Spatial falloff: normalised by orbit radius so the high-detail zone
   // shrinks as you zoom in, giving finer spatial precision up close.
-  const distNorm  = dist2d / sph.r;
+  const distScale = 800; //Math.max(sph.r, tileSize * 0.2);  // floor at 20% of tile width
+  const distNorm  = dist2d / distScale;
   const distDepth = distNorm < 1.0 ? zoomDepth
                   : distNorm < 2.0 ? Math.min(zoomDepth, 2)
                   : distNorm < 4.0 ? Math.min(zoomDepth, 1)
@@ -278,6 +301,7 @@ function computeNodeTargetDepth(node) {
 }
 
 function applyDisplayLOD() {
+  updateGroundFocus();
   _lodMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
   _lodFrustum.setFromProjectionMatrix(_lodMatrix);
   for (const tile of tileStates) {
@@ -353,7 +377,7 @@ window.addEventListener('touchmove', e => {
 }, { passive: false });
 
 renderer.domElement.addEventListener('wheel', e => {
-  sph.r = Math.max(10, Math.min(50000, sph.r * (1 + e.deltaY * 0.001)));
+  sph.r = Math.max(5, Math.min(50000, sph.r * (1 + e.deltaY * 0.001)));
   scheduleLODUpdate();
   render();
 }, { passive: true });
@@ -367,9 +391,11 @@ window.addEventListener('resize', () => {
 
 function applyDrag(dx, dy) {
   if (rightDrag) {
-    const right = new THREE.Vector3(Math.cos(sph.theta), 0, -Math.sin(sph.theta));
-    target.addScaledVector(right, -dx * sph.r * 0.001);
-    target.addScaledVector(new THREE.Vector3(0, 1, 0), dy * sph.r * 0.001);
+    // Both vectors are in the XY (ground) plane so panning never drifts target.z
+    const right   = new THREE.Vector3( Math.cos(sph.theta),  Math.sin(sph.theta), 0);
+    const forward = new THREE.Vector3(-Math.sin(sph.theta),  Math.cos(sph.theta), 0);
+    target.addScaledVector(right,   -dx * sph.r * 0.001);
+    target.addScaledVector(forward,  dy * sph.r * 0.001);
   } else {
     sph.theta -= dx * 0.005;
     sph.phi = Math.max(0.05, Math.min(Math.PI * 0.95, sph.phi - dy * 0.005));
@@ -401,6 +427,43 @@ function addLayer(key, group) {
 let colorMode = 'height';
 let globalZMin = 0, globalZMax = 1;
 
+// ── Land cover raster lookup ──────────────────────────────────────────────────
+// lcPixels: flat Uint8ClampedArray (RGBA) from the landcover PNG canvas readback
+// lcMeta:   { xMin, yMax, pixelSize, width, height, legend }
+let lcPixels = null, lcMeta = null;
+
+async function loadLandcover() {
+  try {
+    lcMeta = await fetch('landcover.json').then(r => r.json());
+    lcPixels = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width  = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        resolve(ctx.getImageData(0, 0, img.width, img.height).data);
+      };
+      img.onerror = reject;
+      img.src = 'landcover.png';
+    });
+
+    // Build legend from the metadata
+    const el = document.getElementById('lc-legend');
+    for (const [id, cls] of Object.entries(lcMeta.legend).sort((a, b) => Number(a[0]) - Number(b[0]))) {
+      const row = document.createElement('div');
+      row.className = 'cls-row';
+      row.innerHTML = `<span>${cls.name}</span><span class="cls-swatch" style="background:${cls.color}"></span>`;
+      el.appendChild(row);
+    }
+
+    document.getElementById('btn-lc').style.display = '';
+  } catch (err) {
+    console.warn('Land cover not available:', err.message);
+  }
+}
+
 // posArr[ci+2] is already Z - coordOffset.z = Z - gMinZ, so dividing by span
 // gives the normalised height directly — no separate zArr needed.
 function applyNodeColors(node, from, to) {
@@ -415,6 +478,20 @@ function applyNodeColors(node, from, to) {
       node.colArr[ci]   = node.rgbArr[ci]   / 255;
       node.colArr[ci+1] = node.rgbArr[ci+1] / 255;
       node.colArr[ci+2] = node.rgbArr[ci+2] / 255;
+    } else if (colorMode === 'landcover' && lcPixels) {
+      // Convert from world-space back to absolute SWEREF99TM, then to raster pixel
+      const absX = node.posArr[ci]   + coordOffset.x;
+      const absY = node.posArr[ci+1] + coordOffset.y;
+      const px = Math.floor((absX - lcMeta.xMin) / lcMeta.pixelSize);
+      const py = Math.floor((lcMeta.yMax - absY) / lcMeta.pixelSize);
+      if (px >= 0 && px < lcMeta.width && py >= 0 && py < lcMeta.height) {
+        const pidx = (py * lcMeta.width + px) * 4;
+        node.colArr[ci]   = lcPixels[pidx]   / 255;
+        node.colArr[ci+1] = lcPixels[pidx+1] / 255;
+        node.colArr[ci+2] = lcPixels[pidx+2] / 255;
+      } else {
+        node.colArr[ci] = node.colArr[ci+1] = node.colArr[ci+2] = 0.3;
+      }
     } else {
       heightColor(node.posArr[ci + 2] / span, node.colArr, ci);
     }
@@ -437,9 +514,9 @@ document.querySelectorAll('.cm-btn').forEach(btn => {
     colorMode = btn.dataset.mode;
     document.querySelectorAll('.cm-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-    const isHeight = colorMode === 'height';
-    document.getElementById('height-legend').style.display = isHeight ? '' : 'none';
-    document.getElementById('cls-legend').style.display    = colorMode === 'classification' ? '' : 'none';
+    document.getElementById('height-legend').style.display = colorMode === 'height'          ? '' : 'none';
+    document.getElementById('cls-legend').style.display    = colorMode === 'classification'  ? '' : 'none';
+    document.getElementById('lc-legend').style.display     = colorMode === 'landcover'       ? '' : 'none';
     recolorAll();
   });
 });
@@ -600,6 +677,7 @@ function scheduleLODUpdate() {
 
 function updateLOD() {
   camera.updateMatrixWorld();
+  updateGroundFocus();
   const frustum = new THREE.Frustum().setFromProjectionMatrix(
     new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
   );
@@ -613,7 +691,7 @@ function updateLOD() {
 
     if (!tileVisible) {
       tile.outOfViewSince ??= now;
-      if (now - tile.outOfViewSince > 12_000) {
+      if (now - tile.outOfViewSince > 5_000) {
         for (const node of tile.allNodes) {
           if (node.depth > 1) unloadNode(node);
         }
@@ -789,6 +867,8 @@ async function init() {
   const loadingEl = document.getElementById('loading');
 
   lazPerf = await Las.PointData.createLazPerf({ locateFile: f => '/' + f });
+
+  loadLandcover();  // fire and forget — button appears when ready
 
   const tileFiles = await fetch('tiles.json').then(r => r.json());
   tileStates = tileFiles.map(makeTile);

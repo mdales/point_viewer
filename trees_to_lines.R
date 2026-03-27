@@ -14,15 +14,16 @@ f <- "/Users/michael/dev/kullbergcraft/data/laz_files/70_6/23F025_707_60_2500.la
 las <- readLAS(f, select = "xyzr")
 stopifnot(st_crs(trees) == st_crs(las))
 
-las_sub <- clip_rectangle(las,
-xleft = 601053, ybottom = 7073594,  # adjust to your area of interest
-xright = 601278, ytop = 7073760)
+# las_sub <- clip_rectangle(las,
+# xleft = 601053, ybottom = 7073594,  # adjust to your area of interest
+# xright = 601278, ytop = 7073760)
 
 
-las_area <- st_bbox(las_sub)
+las_area <- st_bbox(las)
 
 
 clipped_trees <- st_crop(trees, las_area)
+
 
 coords    <- st_coordinates(clipped_trees)
 z_top     <- clipped_trees$Z          # relative elevation from lidR
