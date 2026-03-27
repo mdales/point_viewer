@@ -238,6 +238,25 @@ function pinchDist(touches) {
   );
 }
 
+// Called every render: adjusts each tile's drawRange to match the current
+// camera position without any loading — data stays in memory, we just
+// change how much of the buffer is visible.
+const _lodFrustum = new THREE.Frustum();
+const _lodMatrix  = new THREE.Matrix4();
+function applyDisplayLOD() {
+  _lodMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+  _lodFrustum.setFromProjectionMatrix(_lodMatrix);
+  for (const tile of tileStates) {
+    if (!tile.box || tile.failed || tile.loadedDepth < 0 || !tile.geo) continue;
+    const visible = _lodFrustum.intersectsBox(tile.box);
+    tile.group.visible = visible;
+    if (!visible) continue;
+    const want  = Math.min(computeTargetDepth(tile), tile.loadedDepth);
+    const count = tile.depthEndCount[want] ?? tile.loadedCount;
+    tile.geo.setDrawRange(0, count);
+  }
+}
+
 function render() {
   camera.position.set(
     target.x + sph.r * Math.sin(sph.phi) * Math.sin(sph.theta),
@@ -245,6 +264,8 @@ function render() {
     target.z + sph.r * Math.cos(sph.phi)
   );
   camera.lookAt(target);
+  camera.updateMatrixWorld();  // needed before applyDisplayLOD reads the matrices
+  applyDisplayLOD();
   renderer.render(scene, camera);
 }
 
@@ -413,8 +434,10 @@ function makeTile(filename) {
 
     loadedDepth: -1,
     targetDepth: 0,
+    depthEndCount: [],  // depthEndCount[d] = loadedCount after depth d fully loaded
     loading: false,
     failed: false,
+    outOfViewSince: null,
 
     seenClasses: new Set(),
   };
@@ -465,6 +488,37 @@ function ensureCapacity(tile, needed) {
     tile.group.add(tile.mesh);
   }
 
+  if (oldGeo) oldGeo.dispose();
+}
+
+// Shrink a tile's buffers back to keepDepth, freeing memory from deeper levels.
+// The old large TypedArrays become GC-eligible immediately.
+function unloadAbove(tile, keepDepth) {
+  if (tile.loadedDepth <= keepDepth || tile.loading) return;
+  const keepCount = tile.depthEndCount[keepDepth] ?? 0;
+  if (!keepCount) return;
+
+  tile.posArr = tile.posArr.slice(0, keepCount * 3);
+  tile.zArr   = tile.zArr.slice(0,   keepCount);
+  tile.clsArr = tile.clsArr.slice(0, keepCount);
+  tile.colArr = tile.colArr.slice(0, keepCount * 3);
+  if (tile.rgbArr) tile.rgbArr = tile.rgbArr.slice(0, keepCount * 3);
+
+  tile.capacity    = keepCount;
+  tile.loadedCount = keepCount;
+  tile.loadedDepth = keepDepth;
+  tile.depthEndCount.length = keepDepth + 1;
+
+  const oldGeo = tile.geo;
+  tile.geo = new THREE.BufferGeometry();
+  const posAttr = new THREE.BufferAttribute(tile.posArr, 3);
+  const colAttr = new THREE.BufferAttribute(tile.colArr, 3);
+  posAttr.setUsage(THREE.DynamicDrawUsage);
+  colAttr.setUsage(THREE.DynamicDrawUsage);
+  tile.geo.setAttribute('position', posAttr);
+  tile.geo.setAttribute('color',    colAttr);
+  tile.geo.setDrawRange(0, keepCount);
+  if (tile.mesh) tile.mesh.geometry = tile.geo;
   if (oldGeo) oldGeo.dispose();
 }
 
@@ -529,23 +583,32 @@ const loadQ = {
 // ── LOD ───────────────────────────────────────────────────────────────────────
 
 // Returns the desired octree depth for a tile given the current camera state.
-// The heuristic: how large does the tile appear relative to the view distance?
-// A tile that fills the screen needs more detail than one in the distance.
+// Two independent limits, both must be satisfied to get high detail:
+//   zoomDepth  — how zoomed in is the camera overall?
+//   distDepth  — how close is this tile's centre to the camera target?
+// Taking the minimum means a tile only gets high detail when you are
+// both zoomed in AND looking at it — distant tiles drop off quickly.
 function computeTargetDepth(tile) {
   const tileSize = tile.box.max.x - tile.box.min.x;
   const cx = (tile.box.min.x + tile.box.max.x) / 2;
   const cy = (tile.box.min.y + tile.box.max.y) / 2;
   const dist2d = Math.hypot(target.x - cx, target.y - cy);
-  // Use whichever is larger: zoom radius or half the distance to centre —
-  // this way distant tiles don't demand the same detail as the one you're over.
-  const effective = Math.max(sph.r, dist2d * 0.5);
-  const screenRatio = tileSize / effective;
 
-  if (screenRatio < 0.25) return 0;
-  if (screenRatio < 0.6)  return 1;
-  if (screenRatio < 1.2)  return 2;
-  if (screenRatio < 2.5)  return 3;
-  return Math.min(4, tile.maxAvailDepth);
+  const zoomRatio = tileSize / sph.r;
+  const zoomDepth = zoomRatio < 0.25 ? 0
+                  : zoomRatio < 0.6  ? 1
+                  : zoomRatio < 1.2  ? 2
+                  : zoomRatio < 2.5  ? 3
+                  : Math.min(4, tile.maxAvailDepth);
+
+  // Distance normalised by tile size; tiles within half a tile-width of the
+  // camera target get no distance penalty.
+  const distNorm  = dist2d / tileSize;
+  const distDepth = distNorm < 0.5 ? zoomDepth   // no penalty — same as zoom
+                  : distNorm < 1.5 ? Math.min(zoomDepth, 1)
+                  : 0;
+
+  return distDepth;
 }
 
 let lodTimer = null;
@@ -561,13 +624,23 @@ function updateLOD() {
     new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
   );
 
+  const now = Date.now();
+
   for (const tile of tileStates) {
     if (!tile.box || tile.failed) continue;
 
     const visible = frustum.intersectsBox(tile.box);
     tile.group.visible = visible;
 
-    if (!visible || tile.loading) continue;
+    if (!visible) {
+      // Track how long this tile has been out of view; unload deep data after a delay
+      tile.outOfViewSince ??= now;
+      if (now - tile.outOfViewSince > 12_000) unloadAbove(tile, 1);
+      continue;
+    }
+
+    tile.outOfViewSince = null;
+    if (tile.loading) continue;
 
     const want = Math.min(computeTargetDepth(tile), tile.maxAvailDepth);
     tile.targetDepth = want;
@@ -600,6 +673,8 @@ async function loadNextDepth(tile) {
     }
 
     tile.loadedDepth = depth;
+    tile.depthEndCount[depth] = tile.loadedCount;
+    render();  // applyDisplayLOD now sees the updated depth
   } catch (err) {
     console.error('Load error:', tile.url, err);
     tile.failed = true;
