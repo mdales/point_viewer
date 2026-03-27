@@ -3,18 +3,24 @@ library(terra)
 library(jsonlite)
 library(lidR)
 
-trees  <- st_read("/Users/michael/dev/kullbergcraft/data/tree_tops_p2r.gpkg")
+trees  <- st_read("/Users/michael/dev/kullbergcraft/data/tree_tops_pitfree.gpkg")
 
 
-dtm_files <- list.files("/Users/michael/dev/kullbergcraft/data/dem_tiles", 
+dtm_files <- list.files("/Users/michael/dev/kullbergcraft/data/dem_tiles",
                         pattern = "\\.tif$|\\.img$", full.names = TRUE)
 dtm <- vrt(dtm_files)
 
 f <- "/Users/michael/dev/kullbergcraft/data/laz_files/70_6/23F025_707_60_2500.laz"
 las <- readLAS(f, select = "xyzr")
-las_area <- st_bbox(las)
-
 stopifnot(st_crs(trees) == st_crs(las))
+
+las_sub <- clip_rectangle(las,
+xleft = 601053, ybottom = 7073594,  # adjust to your area of interest
+xright = 601278, ytop = 7073760)
+
+
+las_area <- st_bbox(las_sub)
+
 
 clipped_trees <- st_crop(trees, las_area)
 
@@ -33,4 +39,4 @@ tree_lines <- data.frame(
   z_top    = z_top + z_bottom
 )
 
-write_json(tree_lines, "trees.json", auto_unbox = TRUE)
+write_json(tree_lines, "trees_pitfree.json", auto_unbox = TRUE)

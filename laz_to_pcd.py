@@ -9,6 +9,7 @@ import pandas as pd
 from pypcd4 import PointCloud, Encoding
 
 
+
 def heightColor(t: float) -> tuple[float, float, float]:
   # mako-inspired: dark navy -> teal -> yellow-white
   stops = [
@@ -30,51 +31,43 @@ def json_to_pcd(
 
     global_min_z = math.inf
     global_max_z = -math.inf
-    # global_min_y = math.inf
-    # global_max_y = -math.inf
-    # global_min_x = math.inf
-    # global_max_x = -math.inf
 
     for path in points_paths:
-        input = laspy.read(path)
+        las = laspy.read(path)
 
-        min_z = input.z.min()
+        mask = (
+            (las.x >= 601053) & (las.x <= 601278) &
+            (las.y >= 7073594) & (las.y <= 7073760)
+        )
+
+
+        min_z = las.z[mask].min()
         if min_z < global_min_z:
             global_min_z = min_z
-        max_z = input.z.max()
+        max_z = las.z[mask].max()
         if max_z > global_max_z:
             global_max_z = max_z
-        # min_y = input.y.min()
-        # if min_y < global_min_y:
-        #     global_min_y = min_y
-        # max_y = input.y.max()
-        # if max_y > global_max_y:
-        #     global_max_y = max_y
-        # min_x = input.x.min()
-        # if min_x < global_min_x:
-        #     global_min_x = min_x
-        # max_x = input.x.max()
-        # if max_x > global_max_x:
-        #     global_max_x = max_x
-
     range_z = global_max_z - global_min_z
-#
-#     mid_x = global_max_x - global_min_x
-#     mid_y = global_max_y - global_min_y
 
     stacks = []
     for path in points_paths:
-        input = laspy.read(path)
+        las = laspy.read(path)
+
+        mask = (
+            (las.x >= 601053) & (las.x <= 601278) &
+            (las.y >= 7073594) & (las.y <= 7073760)
+        )
 
         colours = []
-        for z in input.z:
+        for z in las.z[mask] :
             r, g, b = heightColor((z - global_min_z) / range_z)
             colours.append([r, g, b])
         cols = np.array(colours)
         encoded_cols = PointCloud.encode_rgb(cols)
 
-        raw = np.vstack((input.x, input.y, input.z, encoded_cols)).T
-        stacks.append(raw)
+        points = np.vstack((las.x[mask], las.y[mask], las.z[mask], encoded_cols)).T
+
+        stacks.append(points)
     raw = np.concat(stacks)
 
     pc = PointCloud.from_xyzrgb_points(raw)
