@@ -67,6 +67,17 @@
     .cm-btn:hover { background: rgba(255,255,255,0.1); }
     .cm-btn.active { background: #31c884; color: #000; border-color: #31c884; }
 
+    #attribution {
+      position: absolute;
+      bottom: 16px;
+      left: 16px;
+      font-family: monospace;
+      font-size: 11px;
+      color: #666;
+    }
+    #attribution a { color: #888; text-decoration: none; }
+    #attribution a:hover { color: #aaa; }
+
     #legend {
       position: absolute;
       bottom: 16px;
@@ -105,6 +116,11 @@
 <body>
 <div id="loading">Initialising…</div>
 
+<div id="attribution">
+  LiDAR: <a href="https://www.lantmateriet.se/sv/geodata/vara-produkter/produktlista/laserdata-nedladdning-skog/" target="_blank" rel="noopener">Lantmäteriet Laserdata Skog</a> — CC0 ·
+  Land cover: <a href="https://geodatakatalogen.naturvardsverket.se/geonetwork/srv/swe/catalog.search#/metadata/0f1a86d5-d578-44bd-957e-3dcdb0b34ba0" target="_blank" rel="noopener">Naturvårdsverket NMD 2018</a> — Europa No Limits
+</div>
+
 <div id="ui" style="display:none">
   <strong id="title">LiDAR — Kullberg</strong><br><br>
   drag · rotate<br>
@@ -125,12 +141,12 @@
     Points — <span id="pt-count">—</span>
   </label>
   <label class="layer-toggle">
-    <input type="checkbox" checked data-layer="p2r">
+    <input type="checkbox" data-layer="p2r">
     <span class="swatch" style="background:#f44"></span>
     Trees (p2r) — <span id="p2r-count"></span>
   </label>
   <label class="layer-toggle">
-    <input type="checkbox" checked data-layer="pitfree">
+    <input type="checkbox" data-layer="pitfree">
     <span class="swatch" style="background:#4f4"></span>
     Trees (pit-free) — <span id="pitfree-count"></span>
   </label>
@@ -157,7 +173,7 @@
 
 <script type="module">
 import * as THREE from 'three';
-import copcLib from '/copc-bundle.js';
+import copcLib from '/kullberg/copc-bundle.js';
 const { Copc, Las } = copcLib;
 
 // ── Color maps ────────────────────────────────────────────────────────────────
@@ -866,7 +882,7 @@ function maybeUpdateClsLegend() {
 async function init() {
   const loadingEl = document.getElementById('loading');
 
-  lazPerf = await Las.PointData.createLazPerf({ locateFile: f => '/' + f });
+  lazPerf = await Las.PointData.createLazPerf({ locateFile: f => '/kullberg/' + f });
 
   loadLandcover();  // fire and forget — button appears when ready
 
