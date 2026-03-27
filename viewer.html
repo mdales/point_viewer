@@ -50,6 +50,27 @@
       flex-shrink: 0;
     }
 
+    #color-modes {
+      display: flex;
+      gap: 4px;
+      padding: 5px 10px;
+      border-radius: 4px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+    .cm-btn {
+      cursor: pointer;
+      padding: 2px 8px;
+      border-radius: 3px;
+      border: 1px solid rgba(255,255,255,0.15);
+      background: transparent;
+      color: #aaa;
+      font-family: monospace;
+      font-size: 11px;
+    }
+    .cm-btn:hover { background: rgba(255,255,255,0.1); }
+    .cm-btn.active { background: #31c884; color: #000; border-color: #31c884; }
+
     #legend {
       position: absolute;
       bottom: 16px;
@@ -70,6 +91,26 @@
     }
     .legend-row { display: flex; align-items: center; gap: 6px; }
 
+    #cls-legend {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      align-items: flex-end;
+    }
+    .cls-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-family: monospace;
+      font-size: 10px;
+      color: #aaa;
+    }
+    .cls-swatch {
+      width: 10px; height: 10px;
+      border-radius: 2px;
+      flex-shrink: 0;
+    }
+
     #loading {
       position: absolute;
       top: 50%;
@@ -83,37 +124,47 @@
   </style>
 </head>
 <body>
-<div id="loading">Loading point cloud: 0%</div>
+<div id="loading">Connecting…</div>
 
 <div id="ui" style="display:none">
-  <strong id="title">LiDAR — </strong><br><br>
+  <strong id="title">LiDAR</strong><br><br>
   drag · rotate<br>
   right-drag · pan<br>
   scroll · zoom
 </div>
 
 <div id="layers">
+  <div id="color-modes">
+    <button class="cm-btn active" data-mode="height">height</button>
+    <button class="cm-btn" data-mode="classification">class</button>
+    <button class="cm-btn" id="btn-rgb" data-mode="rgb" style="display:none">rgb</button>
+  </div>
   <label class="layer-toggle">
     <input type="checkbox" checked data-layer="pointCloud">
     <span class="swatch" style="background:#5ad"></span>
-    Point cloud - <span id="pt-count"></span>
+    Point cloud — <span id="pt-count"></span>
   </label>
   <label class="layer-toggle">
     <input type="checkbox" checked data-layer="p2r">
     <span class="swatch" style="background:#f44"></span>
-    Trees (p2r) - <span id="p2r-count"></span>
+    Trees (p2r) — <span id="p2r-count"></span>
   </label>
   <label class="layer-toggle">
     <input type="checkbox" checked data-layer="pitfree">
     <span class="swatch" style="background:#4f4"></span>
-    Trees (pit-free) - <span id="pitfree-count"></span>
+    Trees (pit-free) — <span id="pitfree-count"></span>
   </label>
 </div>
 
 <div id="legend" style="display:none">
-  <div class="legend-row"><span id="z-max"></span></div>
-  <div class="legend-row"><div id="gradient"></div></div>
-  <div class="legend-row"><span id="z-min"></span></div>
+  <!-- height legend -->
+  <div id="height-legend">
+    <div class="legend-row"><span id="z-max"></span></div>
+    <div class="legend-row"><div id="gradient"></div></div>
+    <div class="legend-row"><span id="z-min"></span></div>
+  </div>
+  <!-- classification legend, populated at load time -->
+  <div id="cls-legend" style="display:none"></div>
 </div>
 
 <script type="importmap">
@@ -127,9 +178,71 @@
 
 <script type="module">
 import * as THREE from 'three';
-import { PCDLoader } from 'three/addons/loaders/PCDLoader.js';
+import copcLib from '/copc-bundle.js';
+const { Copc, Las } = copcLib;
 
-// ── Scene setup ──────────────────────────────────────────────────────────────
+// copc's Getter.create routes relative paths to Node fs — give it a full URL
+const COPC_URL = new URL('kullberg.copc.laz', location.href).href;
+
+// ── Color maps ────────────────────────────────────────────────────────────────
+
+// Mako-inspired: dark navy → teal → yellow-white (matches existing palette)
+const MAKO = [
+  [13/255,  27/255,  75/255],
+  [26/255, 107/255, 138/255],
+  [49/255, 200/255, 132/255],
+  [247/255, 247/255, 158/255],
+];
+
+function heightColor(t, out, i) {
+  t = Math.max(0, Math.min(1, t));
+  const s = t * (MAKO.length - 1);
+  const lo = Math.min(Math.floor(s), MAKO.length - 2);
+  const f  = s - lo;
+  out[i]   = MAKO[lo][0] + f * (MAKO[lo+1][0] - MAKO[lo][0]);
+  out[i+1] = MAKO[lo][1] + f * (MAKO[lo+1][1] - MAKO[lo][1]);
+  out[i+2] = MAKO[lo][2] + f * (MAKO[lo+1][2] - MAKO[lo][2]);
+}
+
+// ASPRS standard classification palette (indices 0-18)
+// prettier-ignore
+const CLS_RGB = new Float32Array([
+  0.50,0.50,0.50, // 0  never classified
+  0.50,0.50,0.50, // 1  unassigned
+  0.60,0.45,0.25, // 2  ground
+  0.55,0.75,0.40, // 3  low vegetation
+  0.30,0.60,0.25, // 4  medium vegetation
+  0.10,0.40,0.15, // 5  high vegetation
+  0.80,0.30,0.20, // 6  building
+  0.90,0.10,0.90, // 7  low point / noise
+  0.40,0.40,0.40, // 8  reserved
+  0.20,0.40,0.80, // 9  water
+  0.30,0.30,0.35, // 10 rail
+  0.65,0.65,0.65, // 11 road surface
+  0.40,0.40,0.40, // 12 reserved
+  0.90,0.80,0.10, // 13 wire – guard
+  0.90,0.60,0.10, // 14 wire – conductor
+  0.60,0.20,0.20, // 15 transmission tower
+  0.80,0.50,0.10, // 16 wire-structure connector
+  0.60,0.50,0.35, // 17 bridge deck
+  1.00,0.00,0.50, // 18 high noise
+]);
+
+const CLS_LABELS = [
+  'Never classified','Unassigned','Ground','Low vegetation','Medium vegetation',
+  'High vegetation','Building','Low noise','Reserved','Water','Rail',
+  'Road surface','Reserved','Wire – guard','Wire – conductor','Transmission tower',
+  'Wire connector','Bridge deck','High noise',
+];
+
+function classColor(cls, out, i) {
+  const c = Math.min(cls, 18) * 3;
+  out[i]   = CLS_RGB[c];
+  out[i+1] = CLS_RGB[c+1];
+  out[i+2] = CLS_RGB[c+2];
+}
+
+// ── Scene setup ───────────────────────────────────────────────────────────────
 
 const scene    = new THREE.Scene();
 const camera   = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 100000);
@@ -139,7 +252,7 @@ renderer.setPixelRatio(devicePixelRatio);
 renderer.setSize(innerWidth, innerHeight);
 document.body.appendChild(renderer.domElement);
 
-// ── Camera controls ──────────────────────────────────────────────────────────
+// ── Camera controls ───────────────────────────────────────────────────────────
 
 let sph    = { theta: 0.4, phi: 0.5, r: 1000 };
 let target = new THREE.Vector3();
@@ -199,9 +312,7 @@ window.addEventListener('touchmove', e => {
   e.preventDefault();
   if (e.touches.length === 2) {
     const d = pinchDist(e.touches);
-    if (prevPinchDist !== null) {
-      sph.r = Math.max(10, Math.min(50000, sph.r * (prevPinchDist / d)));
-    }
+    if (prevPinchDist !== null) sph.r = Math.max(10, Math.min(50000, sph.r * (prevPinchDist / d)));
     prevPinchDist = d;
   }
   const x = e.touches.length === 2
@@ -235,78 +346,259 @@ function applyDrag(dx, dy) {
   }
 }
 
-// ── Layer registry + toggle UI ───────────────────────────────────────────────
+// ── Layer registry + toggle UI ────────────────────────────────────────────────
 
-const layers = {};  // key → THREE.Group, populated as data loads
+const layers = {};
 
 document.querySelectorAll('#layers input[type=checkbox]').forEach(checkbox => {
   checkbox.addEventListener('change', () => {
     const group = layers[checkbox.dataset.layer];
-    if (group) {
-      group.visible = checkbox.checked;
-      render();
-    }
-    // if data hasn't loaded yet the group will respect .visible when it does
+    if (group) { group.visible = checkbox.checked; render(); }
   });
 });
 
 function addLayer(key, group) {
   layers[key] = group;
-  // honour checkbox state that may have been set before load finished
   const checkbox = document.querySelector(`input[data-layer="${key}"]`);
   if (checkbox) group.visible = checkbox.checked;
   scene.add(group);
   render();
 }
 
-// ── Loaders ──────────────────────────────────────────────────────────────────
+// ── Color mode UI ─────────────────────────────────────────────────────────────
 
-const pcdLoader = new PCDLoader();
+let colorMode = 'height';
+let zMin = 0, zMax = 1;
+let hasRGB = false;
 
-// Point cloud
-pcdLoader.load(
-  'passage.pcd',
-  pts => {
-    pts.geometry.computeBoundingBox();
-    const box = pts.geometry.boundingBox;
-    box.getCenter(target);
-    sph.r = box.getSize(new THREE.Vector3()).length() * 0.7;
+// laz-perf WASM instance — initialized once before any decompression
+let lazPerf = null;
 
-    pts.material.size = 0.8;
+// Typed arrays allocated after hierarchy load
+let posArr, zArr, clsArr, rgbArr, colArr;
+let totalPoints = 0, loadedPoints = 0;
+let pointGeo = null;
 
-    const group = new THREE.Group();
-    group.add(pts);
-    addLayer('pointCloud', group);
-
-    const n = pts.geometry.attributes.position.array.length / 3;
-    document.getElementById('loading').style.display = 'none';
-    document.getElementById('ui').style.display     = 'block';
-    document.getElementById('legend').style.display = 'block';
-    document.getElementById('pt-count').textContent = n.toLocaleString() + ' points';
-  },
-  e => {
-    const pct = Math.floor((e.loaded / e.total) * 100);
-    document.getElementById('loading').textContent = `Loading point cloud: ${pct}%`;
+function applyColors(from, to) {
+  const span = zMax - zMin || 1;
+  for (let i = from; i < to; i++) {
+    const ci = i * 3;
+    if (colorMode === 'height') {
+      heightColor((zArr[i] - zMin) / span, colArr, ci);
+    } else if (colorMode === 'classification') {
+      classColor(clsArr[i], colArr, ci);
+    } else if (colorMode === 'rgb' && hasRGB) {
+      colArr[ci]   = rgbArr[ci]   / 255;
+      colArr[ci+1] = rgbArr[ci+1] / 255;
+      colArr[ci+2] = rgbArr[ci+2] / 255;
+    } else {
+      heightColor((zArr[i] - zMin) / span, colArr, ci);
+    }
   }
-);
+  if (pointGeo) {
+    pointGeo.attributes.color.needsUpdate = true;
+  }
+}
 
-// Tree layers — one function handles both datasets
+function recolorAll() {
+  applyColors(0, loadedPoints);
+  render();
+}
+
+document.querySelectorAll('.cm-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    colorMode = btn.dataset.mode;
+    document.querySelectorAll('.cm-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+
+    // Show relevant legend
+    const isHeight = colorMode === 'height';
+    document.getElementById('height-legend').style.display = isHeight ? '' : 'none';
+    document.getElementById('cls-legend').style.display    = colorMode === 'classification' ? '' : 'none';
+
+    recolorAll();
+  });
+});
+
+// ── COPC loader ───────────────────────────────────────────────────────────────
+
+let coordOffset = { x: 0, y: 0, z: 0 };  // shared with tree loader
+
+async function loadCopc() {
+  const loadingEl = document.getElementById('loading');
+
+  // Initialize the WASM decompressor once with an explicit local path.
+  // locateFile is called with the bare filename ('laz-perf.wasm') and must
+  // return the URL the browser should fetch — we serve it from the root.
+  lazPerf = await Las.PointData.createLazPerf({
+    locateFile: (filename) => '/' + filename,
+  });
+
+  const copc = await Copc.create(COPC_URL);
+  const { header, info } = copc;
+
+  hasRGB = [2, 3, 7, 8].includes(header.pointDataRecordFormat);  // PDRF 6 = no colour
+  document.getElementById('btn-rgb').style.display = hasRGB ? '' : 'none';
+
+  // Centre XY on cloud midpoint; Z at ground (min elevation)
+  coordOffset.x = (header.min[0] + header.max[0]) / 2;
+  coordOffset.y = (header.min[1] + header.max[1]) / 2;
+  coordOffset.z = header.min[2];
+  zMin = 0;
+  zMax = header.max[2] - header.min[2];
+  resolveOffset();  // unblock tree loaders
+
+  document.getElementById('z-max').textContent = Math.round(header.max[2]) + ' m';
+  document.getElementById('z-min').textContent = Math.round(header.min[2]) + ' m';
+
+  loadingEl.textContent = 'Loading hierarchy…';
+
+  // Recursively load all hierarchy pages
+  const allNodes = {};
+  async function loadPage(pageInfo) {
+    const { nodes, pages } = await Copc.loadHierarchyPage(COPC_URL, pageInfo);
+    Object.assign(allNodes, nodes);
+    for (const subPage of Object.values(pages ?? {})) {
+      await loadPage(subPage);
+    }
+  }
+  await loadPage(info.rootHierarchyPage);
+
+  // Sort depth-first: coarsest nodes (depth 0) load and display first
+  const sortedNodes = Object.entries(allNodes)
+    .map(([key, node]) => ({ key, depth: parseInt(key.split('-')[0]), ...node }))
+    .filter(n => n.pointCount > 0)
+    .sort((a, b) => a.depth - b.depth);
+
+  totalPoints = sortedNodes.reduce((sum, n) => sum + n.pointCount, 0);
+
+  // Pre-allocate all buffers up front
+  posArr = new Float32Array(totalPoints * 3);
+  zArr   = new Float32Array(totalPoints);
+  clsArr = new Uint8Array(totalPoints);
+  rgbArr = hasRGB ? new Uint8Array(totalPoints * 3) : null;
+  colArr = new Float32Array(totalPoints * 3);
+
+  // Three.js geometry — dynamic so WebGL doesn't complain about updates
+  pointGeo = new THREE.BufferGeometry();
+  const posAttr = new THREE.BufferAttribute(posArr, 3);
+  const colAttr = new THREE.BufferAttribute(colArr, 3);
+  posAttr.setUsage(THREE.DynamicDrawUsage);
+  colAttr.setUsage(THREE.DynamicDrawUsage);
+  pointGeo.setAttribute('position', posAttr);
+  pointGeo.setAttribute('color',    colAttr);
+  pointGeo.setDrawRange(0, 0);
+
+  const pointMesh = new THREE.Points(
+    pointGeo,
+    new THREE.PointsMaterial({ vertexColors: true, size: 0.5, sizeAttenuation: true })
+  );
+  pointMesh.frustumCulled = false;
+
+  const group = new THREE.Group();
+  group.add(pointMesh);
+  addLayer('pointCloud', group);
+
+  // Set initial camera from cloud bounds (before any points are visible)
+  const dx = header.max[0] - header.min[0];
+  const dy = header.max[1] - header.min[1];
+  target.set(0, 0, zMax * 0.35);
+  sph.r = Math.max(dx, dy) * 0.8;
+
+  let bufferOffset = 0;
+  let uiShown = false;
+  const seenClasses = new Set();
+
+  for (const nodeEntry of sortedNodes) {
+    const view = await Copc.loadPointDataView(COPC_URL, copc, nodeEntry, { lazPerf });
+
+    const getX   = view.getter('X');
+    const getY   = view.getter('Y');
+    const getZ   = view.getter('Z');
+    const getCls = view.getter('Classification');
+    const getR   = hasRGB ? view.getter('Red')   : null;
+    const getG   = hasRGB ? view.getter('Green') : null;
+    const getB   = hasRGB ? view.getter('Blue')  : null;
+
+    const start = bufferOffset;
+    for (let j = 0; j < view.pointCount; j++) {
+      const pi  = bufferOffset + j;
+      const pi3 = pi * 3;
+
+      posArr[pi3]   = getX(j) - coordOffset.x;
+      posArr[pi3+1] = getY(j) - coordOffset.y;
+      posArr[pi3+2] = getZ(j) - coordOffset.z;
+
+      zArr[pi]  = getZ(j) - coordOffset.z;
+      const cls = getCls(j);
+      clsArr[pi] = cls;
+      seenClasses.add(cls);
+
+      if (hasRGB) {
+        rgbArr[pi3]   = getR(j) >> 8;  // 16-bit → 8-bit
+        rgbArr[pi3+1] = getG(j) >> 8;
+        rgbArr[pi3+2] = getB(j) >> 8;
+      }
+    }
+
+    applyColors(start, bufferOffset + view.pointCount);
+    bufferOffset += view.pointCount;
+    loadedPoints = bufferOffset;
+
+    pointGeo.setDrawRange(0, loadedPoints);
+    pointGeo.attributes.position.needsUpdate = true;
+
+    const pct = Math.round((loadedPoints / totalPoints) * 100);
+    const mPts = (loadedPoints / 1e6).toFixed(1);
+    loadingEl.textContent = `Loading ${pct}% — ${mPts}M pts`;
+
+    // Show UI after first node arrives so you see something immediately
+    if (!uiShown) {
+      uiShown = true;
+      document.getElementById('ui').style.display     = 'block';
+      document.getElementById('legend').style.display = 'block';
+      document.getElementById('title').textContent = 'LiDAR — Kullberg';
+    }
+
+    render();
+
+    // Yield to browser between nodes so the frame actually paints
+    await new Promise(r => setTimeout(r, 0));
+  }
+
+  loadingEl.style.display = 'none';
+  document.getElementById('pt-count').textContent = (totalPoints / 1e6).toFixed(2) + 'M';
+
+  // Build classification legend from classes actually present in this file
+  const clsLegend = document.getElementById('cls-legend');
+  const sorted = [...seenClasses].sort((a, b) => a - b);
+  for (const cls of sorted) {
+    if (cls > 18) continue;
+    const c = cls * 3;
+    const hex = '#' + [CLS_RGB[c], CLS_RGB[c+1], CLS_RGB[c+2]]
+      .map(v => Math.round(v * 255).toString(16).padStart(2, '0')).join('');
+    const row = document.createElement('div');
+    row.className = 'cls-row';
+    row.innerHTML = `<span>${CLS_LABELS[cls]}</span><span class="cls-swatch" style="background:${hex}"></span>`;
+    clsLegend.appendChild(row);
+  }
+}
+
+// ── Tree layers ───────────────────────────────────────────────────────────────
+
 function loadTreeLayer(url, color, layerKey, countKey) {
-  const hexColor = new THREE.Color(color);
-
   fetch(url)
     .then(r => r.json())
     .then(trees => {
+      const { x: ox, y: oy, z: oz } = coordOffset;
       const group = new THREE.Group();
 
+      document.getElementById(countKey).textContent = trees.length.toLocaleString();
 
-      document.getElementById(countKey).textContent = trees.length + ' points';
-
-      // Line segments: stem base → crown apex
       const positions = [];
       for (const t of trees) {
-        positions.push(t.x, t.y, t.z_bottom);
-        positions.push(t.x, t.y, t.z_top);
+        positions.push(t.x - ox, t.y - oy, t.z_bottom - oz);
+        positions.push(t.x - ox, t.y - oy, t.z_top    - oz);
       }
       const lineGeo = new THREE.BufferGeometry();
       lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
@@ -317,12 +609,11 @@ function loadTreeLayer(url, color, layerKey, countKey) {
       lines.computeLineDistances();
       group.add(lines);
 
-      // Instanced spheres at crown apex
       const sphereGeo = new THREE.SphereGeometry(0.4, 8, 8);
       const spheres   = new THREE.InstancedMesh(sphereGeo, new THREE.MeshBasicMaterial({ color }), trees.length);
       const matrix    = new THREE.Matrix4();
       trees.forEach((t, i) => {
-        matrix.setPosition(t.x, t.y, t.z_top);
+        matrix.setPosition(t.x - ox, t.y - oy, t.z_top - oz);
         spheres.setMatrixAt(i, matrix);
       });
       spheres.instanceMatrix.needsUpdate = true;
@@ -332,17 +623,22 @@ function loadTreeLayer(url, color, layerKey, countKey) {
     });
 }
 
-loadTreeLayer('trees_p2r.json',     0xff2222, 'p2r',     'p2r-count');
-loadTreeLayer('trees_pitfree.json', 0x22ff22, 'pitfree', 'pitfree-count');
+// ── Bootstrap ─────────────────────────────────────────────────────────────────
 
-// Metadata
-fetch('kullberg.json')
-  .then(r => r.json())
-  .then(meta => {
-    document.getElementById('z-max').textContent = Math.round(meta.zMax) + ' m';
-    document.getElementById('z-min').textContent = Math.round(meta.zMin) + ' m';
-    document.getElementById('title').textContent = 'LiDAR — ' + meta.name;
-  });
+// Trees share the same coordinate offset as the point cloud.
+// This promise resolves once the COPC header has been parsed and coordOffset set.
+let resolveOffset;
+const offsetReady = new Promise(r => { resolveOffset = r; });
+
+loadCopc().catch(err => {
+  document.getElementById('loading').textContent = 'Error: ' + err.message;
+  console.error(err);
+});
+
+offsetReady.then(() => {
+  loadTreeLayer('trees_p2r.json',     0xff2222, 'p2r',     'p2r-count');
+  loadTreeLayer('trees_pitfree.json', 0x22ff22, 'pitfree', 'pitfree-count');
+});
 
 </script>
 </body>
