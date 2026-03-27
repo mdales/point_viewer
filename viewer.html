@@ -238,22 +238,57 @@ function pinchDist(touches) {
   );
 }
 
-// Called every render: adjusts each tile's drawRange to match the current
-// camera position without any loading — data stays in memory, we just
-// change how much of the buffer is visible.
+// ── Display LOD ───────────────────────────────────────────────────────────────
+//
+// The COPC octree gives each node a precise 3D bounding box.  We exploit this
+// to give sub-tile spatial resolution: a node near the camera target is shown
+// at full depth while a node at the far corner of the same tile is shown at
+// depth 0–1.  No reloading is needed — applyDisplayLOD() runs every frame and
+// simply shows/hides individual node meshes.
+
 const _lodFrustum = new THREE.Frustum();
 const _lodMatrix  = new THREE.Matrix4();
+
+// Returns the maximum octree depth we want to *display* for this node's spatial
+// region, given the current camera state.  A node is visible iff its depth
+// is ≤ the returned value.
+function computeNodeTargetDepth(node) {
+  const tileSize = node.tile.box.max.x - node.tile.box.min.x;
+  const cx = (node.box.min.x + node.box.max.x) / 2;
+  const cy = (node.box.min.y + node.box.max.y) / 2;
+  const dist2d = Math.hypot(target.x - cx, target.y - cy);
+
+  // Overall zoom depth: how much global detail do we want?
+  const zoomRatio = tileSize / sph.r;
+  const zoomDepth = zoomRatio < 0.25 ? 0
+                  : zoomRatio < 0.6  ? 1
+                  : zoomRatio < 1.2  ? 2
+                  : zoomRatio < 2.5  ? 3
+                  : Math.min(node.tile.maxAvailDepth, 5);
+
+  // Spatial falloff: normalised by orbit radius so the high-detail zone
+  // shrinks as you zoom in, giving finer spatial precision up close.
+  const distNorm  = dist2d / sph.r;
+  const distDepth = distNorm < 1.0 ? zoomDepth
+                  : distNorm < 2.0 ? Math.min(zoomDepth, 2)
+                  : distNorm < 4.0 ? Math.min(zoomDepth, 1)
+                  : 0;
+
+  return distDepth;
+}
+
 function applyDisplayLOD() {
   _lodMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
   _lodFrustum.setFromProjectionMatrix(_lodMatrix);
   for (const tile of tileStates) {
-    if (!tile.box || tile.failed || tile.loadedDepth < 0 || !tile.geo) continue;
-    const visible = _lodFrustum.intersectsBox(tile.box);
-    tile.group.visible = visible;
-    if (!visible) continue;
-    const want  = Math.min(computeTargetDepth(tile), tile.loadedDepth);
-    const count = tile.depthEndCount[want] ?? tile.loadedCount;
-    tile.geo.setDrawRange(0, count);
+    if (tile.failed || !tile.box) continue;
+    const tileVis = _lodFrustum.intersectsBox(tile.box);
+    tile.group.visible = tileVis;
+    if (!tileVis) continue;
+    for (const node of tile.allNodes) {
+      if (!node.mesh) continue;
+      node.mesh.visible = node.depth <= computeNodeTargetDepth(node);
+    }
   }
 }
 
@@ -264,7 +299,7 @@ function render() {
     target.z + sph.r * Math.cos(sph.phi)
   );
   camera.lookAt(target);
-  camera.updateMatrixWorld();  // needed before applyDisplayLOD reads the matrices
+  camera.updateMatrixWorld();
   applyDisplayLOD();
   renderer.render(scene, camera);
 }
@@ -366,29 +401,33 @@ function addLayer(key, group) {
 let colorMode = 'height';
 let globalZMin = 0, globalZMax = 1;
 
-function applyTileColors(tile, from, to) {
+// posArr[ci+2] is already Z - coordOffset.z = Z - gMinZ, so dividing by span
+// gives the normalised height directly — no separate zArr needed.
+function applyNodeColors(node, from, to) {
   const span = globalZMax - globalZMin || 1;
   for (let i = from; i < to; i++) {
     const ci = i * 3;
     if (colorMode === 'height') {
-      heightColor((tile.zArr[i] - globalZMin) / span, tile.colArr, ci);
+      heightColor(node.posArr[ci + 2] / span, node.colArr, ci);
     } else if (colorMode === 'classification') {
-      classColor(tile.clsArr[i], tile.colArr, ci);
-    } else if (colorMode === 'rgb' && tile.hasRGB) {
-      tile.colArr[ci]   = tile.rgbArr[ci]   / 255;
-      tile.colArr[ci+1] = tile.rgbArr[ci+1] / 255;
-      tile.colArr[ci+2] = tile.rgbArr[ci+2] / 255;
+      classColor(node.clsArr[i], node.colArr, ci);
+    } else if (colorMode === 'rgb' && node.tile.hasRGB) {
+      node.colArr[ci]   = node.rgbArr[ci]   / 255;
+      node.colArr[ci+1] = node.rgbArr[ci+1] / 255;
+      node.colArr[ci+2] = node.rgbArr[ci+2] / 255;
     } else {
-      heightColor((tile.zArr[i] - globalZMin) / span, tile.colArr, ci);
+      heightColor(node.posArr[ci + 2] / span, node.colArr, ci);
     }
   }
 }
 
 function recolorAll() {
   for (const tile of tileStates) {
-    if (!tile.loadedCount) continue;
-    applyTileColors(tile, 0, tile.loadedCount);
-    if (tile.geo) tile.geo.attributes.color.needsUpdate = true;
+    for (const node of tile.allNodes) {
+      if (!node.loaded || !node.geo) continue;
+      applyNodeColors(node, 0, node.pointCount);
+      node.geo.attributes.color.needsUpdate = true;
+    }
   }
   render();
 }
@@ -405,7 +444,7 @@ document.querySelectorAll('.cm-btn').forEach(btn => {
   });
 });
 
-// ── Tile state ────────────────────────────────────────────────────────────────
+// ── Tile / Node state ─────────────────────────────────────────────────────────
 
 let tileStates = [];
 let coordOffset = { x: 0, y: 0, z: 0 };
@@ -414,117 +453,69 @@ let lazPerf = null;
 let resolveOffset;
 const offsetReady = new Promise(r => { resolveOffset = r; });
 
+// Shared material for all node meshes — avoids per-node GPU state switches.
+const pointMaterial = new THREE.PointsMaterial({ vertexColors: true, size: 0.5, sizeAttenuation: true });
+
 function makeTile(filename) {
   return {
     url: new URL(filename, location.href).href,
     copc: null,
-    byDepth: [],       // byDepth[d] = array of node entries at depth d
     maxAvailDepth: 0,
     hasRGB: false,
-
-    box: null,         // THREE.Box3 in world-space coords
-
-    posArr: null, zArr: null, clsArr: null, rgbArr: null, colArr: null,
-    capacity: 0,
-    loadedCount: 0,
-
-    geo: null,
-    mesh: null,
+    box: null,               // THREE.Box3 in world-space coords
+    nodeMap: {},             // keyStr → nodeState
+    allNodes: [],            // flat array for fast iteration
     group: new THREE.Group(),
-
-    loadedDepth: -1,
-    targetDepth: 0,
-    depthEndCount: [],  // depthEndCount[d] = loadedCount after depth d fully loaded
-    loading: false,
     failed: false,
     outOfViewSince: null,
-
     seenClasses: new Set(),
   };
 }
 
-// Grow a tile's typed-array buffers to hold at least `needed` points.
-// Recreates the Three.js geometry/attributes if the arrays are replaced.
-function ensureCapacity(tile, needed) {
-  if (needed <= tile.capacity) return;
-  const cap = Math.ceil(needed * 1.25);
-
-  const newPos = new Float32Array(cap * 3);
-  const newZ   = new Float32Array(cap);
-  const newCls = new Uint8Array(cap);
-  const newCol = new Float32Array(cap * 3);
-  const newRgb = tile.hasRGB ? new Uint8Array(cap * 3) : null;
-
-  if (tile.loadedCount > 0) {
-    newPos.set(tile.posArr.subarray(0, tile.loadedCount * 3));
-    newZ.set(  tile.zArr.subarray(0,   tile.loadedCount));
-    newCls.set(tile.clsArr.subarray(0, tile.loadedCount));
-    newCol.set(tile.colArr.subarray(0, tile.loadedCount * 3));
-    if (newRgb && tile.rgbArr) newRgb.set(tile.rgbArr.subarray(0, tile.loadedCount * 3));
-  }
-
-  tile.posArr = newPos; tile.zArr = newZ;
-  tile.clsArr = newCls; tile.colArr = newCol; tile.rgbArr = newRgb;
-  tile.capacity = cap;
-
-  const oldGeo = tile.geo;
-  tile.geo = new THREE.BufferGeometry();
-  const posAttr = new THREE.BufferAttribute(newPos, 3);
-  const colAttr = new THREE.BufferAttribute(newCol, 3);
-  posAttr.setUsage(THREE.DynamicDrawUsage);
-  colAttr.setUsage(THREE.DynamicDrawUsage);
-  tile.geo.setAttribute('position', posAttr);
-  tile.geo.setAttribute('color',    colAttr);
-  tile.geo.setDrawRange(0, tile.loadedCount);
-
-  if (tile.mesh) {
-    tile.mesh.geometry = tile.geo;
-  } else {
-    tile.mesh = new THREE.Points(
-      tile.geo,
-      new THREE.PointsMaterial({ vertexColors: true, size: 0.5, sizeAttenuation: true })
-    );
-    tile.mesh.frustumCulled = false;
-    tile.group.add(tile.mesh);
-  }
-
-  if (oldGeo) oldGeo.dispose();
+// Compute a THREE.Box3 (world-space) for an octree node.
+// The COPC octree subdivides each axis by 2 at every depth level.
+function computeNodeBox(tile, depth, nx, ny, nz) {
+  const { min, max } = tile.copc.header;
+  const cells = 1 << depth;  // 2^depth
+  const sx = (max[0] - min[0]) / cells;
+  const sy = (max[1] - min[1]) / cells;
+  const sz = (max[2] - min[2]) / cells;
+  return new THREE.Box3(
+    new THREE.Vector3(
+      min[0] + nx       * sx - coordOffset.x,
+      min[1] + ny       * sy - coordOffset.y,
+      min[2] + nz       * sz - coordOffset.z
+    ),
+    new THREE.Vector3(
+      min[0] + (nx + 1) * sx - coordOffset.x,
+      min[1] + (ny + 1) * sy - coordOffset.y,
+      min[2] + (nz + 1) * sz - coordOffset.z
+    )
+  );
 }
 
-// Shrink a tile's buffers back to keepDepth, freeing memory from deeper levels.
-// The old large TypedArrays become GC-eligible immediately.
-function unloadAbove(tile, keepDepth) {
-  if (tile.loadedDepth <= keepDepth || tile.loading) return;
-  const keepCount = tile.depthEndCount[keepDepth] ?? 0;
-  if (!keepCount) return;
-
-  tile.posArr = tile.posArr.slice(0, keepCount * 3);
-  tile.zArr   = tile.zArr.slice(0,   keepCount);
-  tile.clsArr = tile.clsArr.slice(0, keepCount);
-  tile.colArr = tile.colArr.slice(0, keepCount * 3);
-  if (tile.rgbArr) tile.rgbArr = tile.rgbArr.slice(0, keepCount * 3);
-
-  tile.capacity    = keepCount;
-  tile.loadedCount = keepCount;
-  tile.loadedDepth = keepDepth;
-  tile.depthEndCount.length = keepDepth + 1;
-
-  const oldGeo = tile.geo;
-  tile.geo = new THREE.BufferGeometry();
-  const posAttr = new THREE.BufferAttribute(tile.posArr, 3);
-  const colAttr = new THREE.BufferAttribute(tile.colArr, 3);
-  posAttr.setUsage(THREE.DynamicDrawUsage);
-  colAttr.setUsage(THREE.DynamicDrawUsage);
-  tile.geo.setAttribute('position', posAttr);
-  tile.geo.setAttribute('color',    colAttr);
-  tile.geo.setDrawRange(0, keepCount);
-  if (tile.mesh) tile.mesh.geometry = tile.geo;
-  if (oldGeo) oldGeo.dispose();
+function makeNodeState(tile, keyStr, entry) {
+  const [d, nx, ny, nz] = keyStr.split('-').map(Number);
+  return {
+    tile,
+    keyStr, depth: d, nx, ny, nz,
+    entry,
+    box: computeNodeBox(tile, d, nx, ny, nz),
+    loaded: false, loading: false, failed: false, queued: false,
+    posArr: null, clsArr: null, rgbArr: null, colArr: null,
+    pointCount: 0,
+    geo: null, mesh: null,
+  };
 }
 
-function fillBuffer(tile, view) {
-  const n = view.pointCount;
-  ensureCapacity(tile, tile.loadedCount + n);
+function fillNodeBuffer(node, view) {
+  const n    = view.pointCount;
+  const tile = node.tile;
+
+  node.posArr = new Float32Array(n * 3);
+  node.clsArr = new Uint8Array(n);
+  node.colArr = new Float32Array(n * 3);
+  if (tile.hasRGB) node.rgbArr = new Uint8Array(n * 3);
 
   const getX   = view.getter('X');
   const getY   = view.getter('Y');
@@ -534,39 +525,58 @@ function fillBuffer(tile, view) {
   const getG   = tile.hasRGB ? view.getter('Green') : null;
   const getB   = tile.hasRGB ? view.getter('Blue')  : null;
 
-  const start = tile.loadedCount;
   for (let j = 0; j < n; j++) {
-    const pi  = start + j;
-    const pi3 = pi * 3;
-    tile.posArr[pi3]   = getX(j) - coordOffset.x;
-    tile.posArr[pi3+1] = getY(j) - coordOffset.y;
-    tile.posArr[pi3+2] = getZ(j) - coordOffset.z;
-    tile.zArr[pi]   = getZ(j) - coordOffset.z;
+    const j3 = j * 3;
+    node.posArr[j3]   = getX(j) - coordOffset.x;
+    node.posArr[j3+1] = getY(j) - coordOffset.y;
+    node.posArr[j3+2] = getZ(j) - coordOffset.z;
     const cls = getCls(j);
-    tile.clsArr[pi] = cls;
+    node.clsArr[j] = cls;
     tile.seenClasses.add(cls);
     if (tile.hasRGB) {
-      tile.rgbArr[pi3]   = getR(j) >> 8;
-      tile.rgbArr[pi3+1] = getG(j) >> 8;
-      tile.rgbArr[pi3+2] = getB(j) >> 8;
+      node.rgbArr[j3]   = getR(j) >> 8;
+      node.rgbArr[j3+1] = getG(j) >> 8;
+      node.rgbArr[j3+2] = getB(j) >> 8;
     }
   }
 
-  applyTileColors(tile, start, start + n);
-  tile.loadedCount += n;
-  tile.geo.setDrawRange(0, tile.loadedCount);
-  tile.geo.attributes.position.needsUpdate = true;
-  tile.geo.attributes.color.needsUpdate    = true;
+  node.pointCount = n;
+  applyNodeColors(node, 0, n);
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(node.posArr, 3));
+  geo.setAttribute('color',    new THREE.BufferAttribute(node.colArr, 3));
+
+  // Explicit bounding geometry lets Three.js frustum-cull individual nodes.
+  geo.boundingBox = node.box.clone();
+  geo.boundingSphere = new THREE.Sphere();
+  node.box.getBoundingSphere(geo.boundingSphere);
+
+  const mesh = new THREE.Points(geo, pointMaterial);
+  mesh.frustumCulled = true;
+
+  node.geo  = geo;
+  node.mesh = mesh;
+  node.loaded = true;
+  tile.group.add(mesh);
 }
 
-// ── Load queue (max 4 concurrent) ────────────────────────────────────────────
+function unloadNode(node) {
+  if (!node.loaded || node.loading) return;
+  if (node.mesh) node.tile.group.remove(node.mesh);
+  if (node.geo)  node.geo.dispose();
+  node.posArr = null; node.clsArr = null; node.colArr = null; node.rgbArr = null;
+  node.geo = null; node.mesh = null;
+  node.loaded = false; node.queued = false;
+}
+
+// ── Load queue (max 4 concurrent) ─────────────────────────────────────────────
 
 const loadQ = {
   tasks:  [],
   active: 0,
   max:    4,
   add(priority, fn) {
-    // Don't queue duplicate tile loads — just update priority
     this.tasks.push({ priority, fn });
     this.tasks.sort((a, b) => b.priority - a.priority);
     this._pump();
@@ -582,35 +592,6 @@ const loadQ = {
 
 // ── LOD ───────────────────────────────────────────────────────────────────────
 
-// Returns the desired octree depth for a tile given the current camera state.
-// Two independent limits, both must be satisfied to get high detail:
-//   zoomDepth  — how zoomed in is the camera overall?
-//   distDepth  — how close is this tile's centre to the camera target?
-// Taking the minimum means a tile only gets high detail when you are
-// both zoomed in AND looking at it — distant tiles drop off quickly.
-function computeTargetDepth(tile) {
-  const tileSize = tile.box.max.x - tile.box.min.x;
-  const cx = (tile.box.min.x + tile.box.max.x) / 2;
-  const cy = (tile.box.min.y + tile.box.max.y) / 2;
-  const dist2d = Math.hypot(target.x - cx, target.y - cy);
-
-  const zoomRatio = tileSize / sph.r;
-  const zoomDepth = zoomRatio < 0.25 ? 0
-                  : zoomRatio < 0.6  ? 1
-                  : zoomRatio < 1.2  ? 2
-                  : zoomRatio < 2.5  ? 3
-                  : Math.min(4, tile.maxAvailDepth);
-
-  // Distance normalised by tile size; tiles within half a tile-width of the
-  // camera target get no distance penalty.
-  const distNorm  = dist2d / tileSize;
-  const distDepth = distNorm < 0.5 ? zoomDepth   // no penalty — same as zoom
-                  : distNorm < 1.5 ? Math.min(zoomDepth, 1)
-                  : 0;
-
-  return distDepth;
-}
-
 let lodTimer = null;
 function scheduleLODUpdate() {
   clearTimeout(lodTimer);
@@ -618,7 +599,6 @@ function scheduleLODUpdate() {
 }
 
 function updateLOD() {
-  // Build current frustum once
   camera.updateMatrixWorld();
   const frustum = new THREE.Frustum().setFromProjectionMatrix(
     new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
@@ -627,74 +607,75 @@ function updateLOD() {
   const now = Date.now();
 
   for (const tile of tileStates) {
-    if (!tile.box || tile.failed) continue;
+    if (tile.failed) continue;
 
-    const visible = frustum.intersectsBox(tile.box);
-    tile.group.visible = visible;
+    const tileVisible = tile.box && frustum.intersectsBox(tile.box);
 
-    if (!visible) {
-      // Track how long this tile has been out of view; unload deep data after a delay
+    if (!tileVisible) {
       tile.outOfViewSince ??= now;
-      if (now - tile.outOfViewSince > 12_000) unloadAbove(tile, 1);
+      if (now - tile.outOfViewSince > 12_000) {
+        for (const node of tile.allNodes) {
+          if (node.depth > 1) unloadNode(node);
+        }
+      }
       continue;
     }
 
     tile.outOfViewSince = null;
-    if (tile.loading) continue;
 
-    const want = Math.min(computeTargetDepth(tile), tile.maxAvailDepth);
-    tile.targetDepth = want;
+    for (const node of tile.allNodes) {
+      if (node.failed || node.loading || node.loaded || node.queued) continue;
 
-    if (tile.loadedDepth >= want) continue;
+      const want = computeNodeTargetDepth(node);
+      if (node.depth > want) continue;
 
-    // Priority: depth-0 loads first (overview) then closer/deeper tiles
-    const priority = (want === 0 ? 200 : 100) - want * 10 - (tile.loadedDepth + 1) * 5;
-    loadQ.add(priority, () => loadNextDepth(tile));
+      const cx = (node.box.min.x + node.box.max.x) / 2;
+      const cy = (node.box.min.y + node.box.max.y) / 2;
+      const dist = Math.hypot(target.x - cx, target.y - cy);
+      // Lower depth (overview) and closer nodes get higher priority
+      const priority = (5 - node.depth) * 1000 - dist;
+
+      node.queued = true;
+      loadQ.add(priority, () => loadNode(node));
+    }
   }
 
   updateStatusBar();
 }
 
-async function loadNextDepth(tile) {
-  if (tile.loading || tile.loadedDepth >= tile.targetDepth) return;
-  tile.loading = true;
-
+async function loadNode(node) {
+  if (node.loaded || node.failed) { node.queued = false; return; }
+  node.loading = true;
   try {
-    const depth = tile.loadedDepth + 1;
-    const nodes = tile.byDepth[depth] ?? [];
-
-    for (const node of nodes) {
-      if (!node.pointCount) continue;
-      const view = await Copc.loadPointDataView(tile.url, tile.copc, node, { lazPerf });
-      fillBuffer(tile, view);
-      updateStatusBar();
-      render();
-      await new Promise(r => setTimeout(r, 0));  // yield so frame paints
-    }
-
-    tile.loadedDepth = depth;
-    tile.depthEndCount[depth] = tile.loadedCount;
-    render();  // applyDisplayLOD now sees the updated depth
+    const view = await Copc.loadPointDataView(node.tile.url, node.tile.copc, node.entry, { lazPerf });
+    fillNodeBuffer(node, view);
+    updateStatusBar();
+    render();
   } catch (err) {
-    console.error('Load error:', tile.url, err);
-    tile.failed = true;
+    console.error('Load error:', node.tile.url, node.keyStr, err);
+    node.failed = true;
   } finally {
-    tile.loading = false;
+    node.loading = false;
+    node.queued  = false;
   }
 
-  // Re-evaluate: need to go deeper after this depth completed?
-  if (!tile.failed && tile.loadedDepth < tile.targetDepth) {
-    updateLOD();
-  }
+  // Re-evaluate: more nodes may now be needed (progressive loading)
+  if (!node.failed) updateLOD();
 }
 
 // ── Status bar ────────────────────────────────────────────────────────────────
 
 function updateStatusBar() {
-  const totalPts = tileStates.reduce((s, t) => s + t.loadedCount, 0);
-  const loading  = tileStates.filter(t => t.loading).length;
+  let totalPts = 0, loadingCount = 0;
+  for (const tile of tileStates) {
+    for (const node of tile.allNodes) {
+      if (node.loaded)  totalPts += node.pointCount;
+      if (node.loading) loadingCount++;
+    }
+  }
   const el = document.getElementById('pt-count');
-  el.textContent = (totalPts / 1e6).toFixed(2) + 'M' + (loading ? ' ↓' : '');
+  el.textContent = (totalPts / 1e6).toFixed(2) + 'M' + (loadingCount ? ' ↓' : '');
+  maybeUpdateClsLegend();
 }
 
 // ── Tile header + hierarchy loading ───────────────────────────────────────────
@@ -721,11 +702,13 @@ async function loadHierarchy(tile) {
     await loadPage(tile.copc.info.rootHierarchyPage);
 
     let maxD = 0;
-    for (const [key, node] of Object.entries(all)) {
-      if (!node.pointCount) continue;
-      const d = parseInt(key.split('-')[0]);
+    for (const [keyStr, entry] of Object.entries(all)) {
+      if (!entry.pointCount) continue;
+      const d = parseInt(keyStr.split('-')[0]);
       maxD = Math.max(maxD, d);
-      (tile.byDepth[d] ??= []).push(node);
+      const node = makeNodeState(tile, keyStr, entry);
+      tile.nodeMap[keyStr] = node;
+      tile.allNodes.push(node);
     }
     tile.maxAvailDepth = maxD;
   } catch (err) {
@@ -771,12 +754,17 @@ function loadTreeLayer(url, color, layerKey, countKey) {
   });
 }
 
-// ── Classification legend (built once all tiles have loaded depth 0) ──────────
+// ── Classification legend (built once all depth-0 nodes are loaded) ───────────
 
 let legendBuilt = false;
 function maybeUpdateClsLegend() {
   if (legendBuilt) return;
-  if (tileStates.some(t => !t.failed && t.loadedDepth < 0)) return;  // not all at depth 0 yet
+  for (const tile of tileStates) {
+    if (tile.failed) continue;
+    const d0 = tile.allNodes.filter(n => n.depth === 0);
+    if (d0.length === 0) return;  // hierarchy not loaded yet
+    if (d0.some(n => !n.loaded && !n.failed)) return;
+  }
 
   legendBuilt = true;
   const seen = new Set();
@@ -805,7 +793,6 @@ async function init() {
   const tileFiles = await fetch('tiles.json').then(r => r.json());
   tileStates = tileFiles.map(makeTile);
 
-  // All tile groups under one scene group so the layer toggle works
   const tilesGroup = new THREE.Group();
   for (const tile of tileStates) tilesGroup.add(tile.group);
   addLayer('pointCloud', tilesGroup);
