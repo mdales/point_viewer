@@ -44,11 +44,7 @@
     }
     .layer-toggle:hover { background: rgba(255,255,255,0.1); }
     .layer-toggle input { cursor: pointer; accent-color: #31c884; }
-    .swatch {
-      width: 10px; height: 10px;
-      border-radius: 50%;
-      flex-shrink: 0;
-    }
+    .swatch { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 
     #color-modes {
       display: flex;
@@ -84,32 +80,15 @@
       color: #aaa;
     }
     #gradient {
-      width: 12px;
-      height: 120px;
+      width: 12px; height: 120px;
       border-radius: 2px;
       background: linear-gradient(to bottom, #f7f79e, #31c884, #1a6b8a, #0d1b4b);
     }
     .legend-row { display: flex; align-items: center; gap: 6px; }
 
-    #cls-legend {
-      display: flex;
-      flex-direction: column;
-      gap: 3px;
-      align-items: flex-end;
-    }
-    .cls-row {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-family: monospace;
-      font-size: 10px;
-      color: #aaa;
-    }
-    .cls-swatch {
-      width: 10px; height: 10px;
-      border-radius: 2px;
-      flex-shrink: 0;
-    }
+    #cls-legend { display: flex; flex-direction: column; gap: 3px; align-items: flex-end; }
+    .cls-row { display: flex; align-items: center; gap: 6px; font-family: monospace; font-size: 10px; color: #aaa; }
+    .cls-swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
 
     #loading {
       position: absolute;
@@ -124,10 +103,10 @@
   </style>
 </head>
 <body>
-<div id="loading">Connecting…</div>
+<div id="loading">Initialising…</div>
 
 <div id="ui" style="display:none">
-  <strong id="title">LiDAR</strong><br><br>
+  <strong id="title">LiDAR — Kullberg</strong><br><br>
   drag · rotate<br>
   right-drag · pan<br>
   scroll · zoom
@@ -142,7 +121,7 @@
   <label class="layer-toggle">
     <input type="checkbox" checked data-layer="pointCloud">
     <span class="swatch" style="background:#5ad"></span>
-    Point cloud — <span id="pt-count"></span>
+    Points — <span id="pt-count">—</span>
   </label>
   <label class="layer-toggle">
     <input type="checkbox" checked data-layer="p2r">
@@ -157,13 +136,11 @@
 </div>
 
 <div id="legend" style="display:none">
-  <!-- height legend -->
   <div id="height-legend">
     <div class="legend-row"><span id="z-max"></span></div>
     <div class="legend-row"><div id="gradient"></div></div>
     <div class="legend-row"><span id="z-min"></span></div>
   </div>
-  <!-- classification legend, populated at load time -->
   <div id="cls-legend" style="display:none"></div>
 </div>
 
@@ -181,12 +158,8 @@ import * as THREE from 'three';
 import copcLib from '/copc-bundle.js';
 const { Copc, Las } = copcLib;
 
-// copc's Getter.create routes relative paths to Node fs — give it a full URL
-const COPC_URL = new URL('kullberg.copc.laz', location.href).href;
-
 // ── Color maps ────────────────────────────────────────────────────────────────
 
-// Mako-inspired: dark navy → teal → yellow-white (matches existing palette)
 const MAKO = [
   [13/255,  27/255,  75/255],
   [26/255, 107/255, 138/255],
@@ -204,7 +177,6 @@ function heightColor(t, out, i) {
   out[i+2] = MAKO[lo][2] + f * (MAKO[lo+1][2] - MAKO[lo][2]);
 }
 
-// ASPRS standard classification palette (indices 0-18)
 // prettier-ignore
 const CLS_RGB = new Float32Array([
   0.50,0.50,0.50, // 0  never classified
@@ -214,7 +186,7 @@ const CLS_RGB = new Float32Array([
   0.30,0.60,0.25, // 4  medium vegetation
   0.10,0.40,0.15, // 5  high vegetation
   0.80,0.30,0.20, // 6  building
-  0.90,0.10,0.90, // 7  low point / noise
+  0.90,0.10,0.90, // 7  low noise
   0.40,0.40,0.40, // 8  reserved
   0.20,0.40,0.80, // 9  water
   0.30,0.30,0.35, // 10 rail
@@ -223,7 +195,7 @@ const CLS_RGB = new Float32Array([
   0.90,0.80,0.10, // 13 wire – guard
   0.90,0.60,0.10, // 14 wire – conductor
   0.60,0.20,0.20, // 15 transmission tower
-  0.80,0.50,0.10, // 16 wire-structure connector
+  0.80,0.50,0.10, // 16 wire connector
   0.60,0.50,0.35, // 17 bridge deck
   1.00,0.00,0.50, // 18 high noise
 ]);
@@ -238,11 +210,11 @@ const CLS_LABELS = [
 function classColor(cls, out, i) {
   const c = Math.min(cls, 18) * 3;
   out[i]   = CLS_RGB[c];
-  out[i+1] = CLS_RGB[c+1];
-  out[i+2] = CLS_RGB[c+2];
+  out[i+1] = CLS_RGB[c + 1];
+  out[i+2] = CLS_RGB[c + 2];
 }
 
-// ── Scene setup ───────────────────────────────────────────────────────────────
+// ── Scene ─────────────────────────────────────────────────────────────────────
 
 const scene    = new THREE.Scene();
 const camera   = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 100000);
@@ -326,6 +298,7 @@ window.addEventListener('touchmove', e => {
 
 renderer.domElement.addEventListener('wheel', e => {
   sph.r = Math.max(10, Math.min(50000, sph.r * (1 + e.deltaY * 0.001)));
+  scheduleLODUpdate();
   render();
 }, { passive: true });
 
@@ -333,6 +306,7 @@ window.addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
+  render();
 });
 
 function applyDrag(dx, dy) {
@@ -344,64 +318,57 @@ function applyDrag(dx, dy) {
     sph.theta -= dx * 0.005;
     sph.phi = Math.max(0.05, Math.min(Math.PI * 0.95, sph.phi - dy * 0.005));
   }
+  scheduleLODUpdate();
 }
 
-// ── Layer registry + toggle UI ────────────────────────────────────────────────
+// ── Layer registry ────────────────────────────────────────────────────────────
 
 const layers = {};
 
 document.querySelectorAll('#layers input[type=checkbox]').forEach(checkbox => {
   checkbox.addEventListener('change', () => {
-    const group = layers[checkbox.dataset.layer];
-    if (group) { group.visible = checkbox.checked; render(); }
+    const g = layers[checkbox.dataset.layer];
+    if (g) { g.visible = checkbox.checked; render(); }
   });
 });
 
 function addLayer(key, group) {
   layers[key] = group;
-  const checkbox = document.querySelector(`input[data-layer="${key}"]`);
-  if (checkbox) group.visible = checkbox.checked;
+  const cb = document.querySelector(`input[data-layer="${key}"]`);
+  if (cb) group.visible = cb.checked;
   scene.add(group);
   render();
 }
 
-// ── Color mode UI ─────────────────────────────────────────────────────────────
+// ── Color mode ────────────────────────────────────────────────────────────────
 
 let colorMode = 'height';
-let zMin = 0, zMax = 1;
-let hasRGB = false;
+let globalZMin = 0, globalZMax = 1;
 
-// laz-perf WASM instance — initialized once before any decompression
-let lazPerf = null;
-
-// Typed arrays allocated after hierarchy load
-let posArr, zArr, clsArr, rgbArr, colArr;
-let totalPoints = 0, loadedPoints = 0;
-let pointGeo = null;
-
-function applyColors(from, to) {
-  const span = zMax - zMin || 1;
+function applyTileColors(tile, from, to) {
+  const span = globalZMax - globalZMin || 1;
   for (let i = from; i < to; i++) {
     const ci = i * 3;
     if (colorMode === 'height') {
-      heightColor((zArr[i] - zMin) / span, colArr, ci);
+      heightColor((tile.zArr[i] - globalZMin) / span, tile.colArr, ci);
     } else if (colorMode === 'classification') {
-      classColor(clsArr[i], colArr, ci);
-    } else if (colorMode === 'rgb' && hasRGB) {
-      colArr[ci]   = rgbArr[ci]   / 255;
-      colArr[ci+1] = rgbArr[ci+1] / 255;
-      colArr[ci+2] = rgbArr[ci+2] / 255;
+      classColor(tile.clsArr[i], tile.colArr, ci);
+    } else if (colorMode === 'rgb' && tile.hasRGB) {
+      tile.colArr[ci]   = tile.rgbArr[ci]   / 255;
+      tile.colArr[ci+1] = tile.rgbArr[ci+1] / 255;
+      tile.colArr[ci+2] = tile.rgbArr[ci+2] / 255;
     } else {
-      heightColor((zArr[i] - zMin) / span, colArr, ci);
+      heightColor((tile.zArr[i] - globalZMin) / span, tile.colArr, ci);
     }
-  }
-  if (pointGeo) {
-    pointGeo.attributes.color.needsUpdate = true;
   }
 }
 
 function recolorAll() {
-  applyColors(0, loadedPoints);
+  for (const tile of tileStates) {
+    if (!tile.loadedCount) continue;
+    applyTileColors(tile, 0, tile.loadedCount);
+    if (tile.geo) tile.geo.attributes.color.needsUpdate = true;
+  }
   render();
 }
 
@@ -410,169 +377,338 @@ document.querySelectorAll('.cm-btn').forEach(btn => {
     colorMode = btn.dataset.mode;
     document.querySelectorAll('.cm-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-
-    // Show relevant legend
     const isHeight = colorMode === 'height';
     document.getElementById('height-legend').style.display = isHeight ? '' : 'none';
     document.getElementById('cls-legend').style.display    = colorMode === 'classification' ? '' : 'none';
-
     recolorAll();
   });
 });
 
-// ── COPC loader ───────────────────────────────────────────────────────────────
+// ── Tile state ────────────────────────────────────────────────────────────────
 
-let coordOffset = { x: 0, y: 0, z: 0 };  // shared with tree loader
+let tileStates = [];
+let coordOffset = { x: 0, y: 0, z: 0 };
+let lazPerf = null;
 
-async function loadCopc() {
-  const loadingEl = document.getElementById('loading');
+let resolveOffset;
+const offsetReady = new Promise(r => { resolveOffset = r; });
 
-  // Initialize the WASM decompressor once with an explicit local path.
-  // locateFile is called with the bare filename ('laz-perf.wasm') and must
-  // return the URL the browser should fetch — we serve it from the root.
-  lazPerf = await Las.PointData.createLazPerf({
-    locateFile: (filename) => '/' + filename,
-  });
+function makeTile(filename) {
+  return {
+    url: new URL(filename, location.href).href,
+    copc: null,
+    byDepth: [],       // byDepth[d] = array of node entries at depth d
+    maxAvailDepth: 0,
+    hasRGB: false,
 
-  const copc = await Copc.create(COPC_URL);
-  const { header, info } = copc;
+    box: null,         // THREE.Box3 in world-space coords
 
-  hasRGB = [2, 3, 7, 8].includes(header.pointDataRecordFormat);  // PDRF 6 = no colour
-  document.getElementById('btn-rgb').style.display = hasRGB ? '' : 'none';
+    posArr: null, zArr: null, clsArr: null, rgbArr: null, colArr: null,
+    capacity: 0,
+    loadedCount: 0,
 
-  // Centre XY on cloud midpoint; Z at ground (min elevation)
-  coordOffset.x = (header.min[0] + header.max[0]) / 2;
-  coordOffset.y = (header.min[1] + header.max[1]) / 2;
-  coordOffset.z = header.min[2];
-  zMin = 0;
-  zMax = header.max[2] - header.min[2];
-  resolveOffset();  // unblock tree loaders
+    geo: null,
+    mesh: null,
+    group: new THREE.Group(),
 
-  document.getElementById('z-max').textContent = Math.round(header.max[2]) + ' m';
-  document.getElementById('z-min').textContent = Math.round(header.min[2]) + ' m';
+    loadedDepth: -1,
+    targetDepth: 0,
+    loading: false,
+    failed: false,
 
-  loadingEl.textContent = 'Loading hierarchy…';
+    seenClasses: new Set(),
+  };
+}
 
-  // Recursively load all hierarchy pages
-  const allNodes = {};
-  async function loadPage(pageInfo) {
-    const { nodes, pages } = await Copc.loadHierarchyPage(COPC_URL, pageInfo);
-    Object.assign(allNodes, nodes);
-    for (const subPage of Object.values(pages ?? {})) {
-      await loadPage(subPage);
-    }
+// Grow a tile's typed-array buffers to hold at least `needed` points.
+// Recreates the Three.js geometry/attributes if the arrays are replaced.
+function ensureCapacity(tile, needed) {
+  if (needed <= tile.capacity) return;
+  const cap = Math.ceil(needed * 1.25);
+
+  const newPos = new Float32Array(cap * 3);
+  const newZ   = new Float32Array(cap);
+  const newCls = new Uint8Array(cap);
+  const newCol = new Float32Array(cap * 3);
+  const newRgb = tile.hasRGB ? new Uint8Array(cap * 3) : null;
+
+  if (tile.loadedCount > 0) {
+    newPos.set(tile.posArr.subarray(0, tile.loadedCount * 3));
+    newZ.set(  tile.zArr.subarray(0,   tile.loadedCount));
+    newCls.set(tile.clsArr.subarray(0, tile.loadedCount));
+    newCol.set(tile.colArr.subarray(0, tile.loadedCount * 3));
+    if (newRgb && tile.rgbArr) newRgb.set(tile.rgbArr.subarray(0, tile.loadedCount * 3));
   }
-  await loadPage(info.rootHierarchyPage);
 
-  // Sort depth-first: coarsest nodes (depth 0) load and display first
-  const sortedNodes = Object.entries(allNodes)
-    .map(([key, node]) => ({ key, depth: parseInt(key.split('-')[0]), ...node }))
-    .filter(n => n.pointCount > 0)
-    .sort((a, b) => a.depth - b.depth);
+  tile.posArr = newPos; tile.zArr = newZ;
+  tile.clsArr = newCls; tile.colArr = newCol; tile.rgbArr = newRgb;
+  tile.capacity = cap;
 
-  totalPoints = sortedNodes.reduce((sum, n) => sum + n.pointCount, 0);
-
-  // Pre-allocate all buffers up front
-  posArr = new Float32Array(totalPoints * 3);
-  zArr   = new Float32Array(totalPoints);
-  clsArr = new Uint8Array(totalPoints);
-  rgbArr = hasRGB ? new Uint8Array(totalPoints * 3) : null;
-  colArr = new Float32Array(totalPoints * 3);
-
-  // Three.js geometry — dynamic so WebGL doesn't complain about updates
-  pointGeo = new THREE.BufferGeometry();
-  const posAttr = new THREE.BufferAttribute(posArr, 3);
-  const colAttr = new THREE.BufferAttribute(colArr, 3);
+  const oldGeo = tile.geo;
+  tile.geo = new THREE.BufferGeometry();
+  const posAttr = new THREE.BufferAttribute(newPos, 3);
+  const colAttr = new THREE.BufferAttribute(newCol, 3);
   posAttr.setUsage(THREE.DynamicDrawUsage);
   colAttr.setUsage(THREE.DynamicDrawUsage);
-  pointGeo.setAttribute('position', posAttr);
-  pointGeo.setAttribute('color',    colAttr);
-  pointGeo.setDrawRange(0, 0);
+  tile.geo.setAttribute('position', posAttr);
+  tile.geo.setAttribute('color',    colAttr);
+  tile.geo.setDrawRange(0, tile.loadedCount);
 
-  const pointMesh = new THREE.Points(
-    pointGeo,
-    new THREE.PointsMaterial({ vertexColors: true, size: 0.5, sizeAttenuation: true })
-  );
-  pointMesh.frustumCulled = false;
-
-  const group = new THREE.Group();
-  group.add(pointMesh);
-  addLayer('pointCloud', group);
-
-  // Set initial camera from cloud bounds (before any points are visible)
-  const dx = header.max[0] - header.min[0];
-  const dy = header.max[1] - header.min[1];
-  target.set(0, 0, zMax * 0.35);
-  sph.r = Math.max(dx, dy) * 0.8;
-
-  let bufferOffset = 0;
-  let uiShown = false;
-  const seenClasses = new Set();
-
-  for (const nodeEntry of sortedNodes) {
-    const view = await Copc.loadPointDataView(COPC_URL, copc, nodeEntry, { lazPerf });
-
-    const getX   = view.getter('X');
-    const getY   = view.getter('Y');
-    const getZ   = view.getter('Z');
-    const getCls = view.getter('Classification');
-    const getR   = hasRGB ? view.getter('Red')   : null;
-    const getG   = hasRGB ? view.getter('Green') : null;
-    const getB   = hasRGB ? view.getter('Blue')  : null;
-
-    const start = bufferOffset;
-    for (let j = 0; j < view.pointCount; j++) {
-      const pi  = bufferOffset + j;
-      const pi3 = pi * 3;
-
-      posArr[pi3]   = getX(j) - coordOffset.x;
-      posArr[pi3+1] = getY(j) - coordOffset.y;
-      posArr[pi3+2] = getZ(j) - coordOffset.z;
-
-      zArr[pi]  = getZ(j) - coordOffset.z;
-      const cls = getCls(j);
-      clsArr[pi] = cls;
-      seenClasses.add(cls);
-
-      if (hasRGB) {
-        rgbArr[pi3]   = getR(j) >> 8;  // 16-bit → 8-bit
-        rgbArr[pi3+1] = getG(j) >> 8;
-        rgbArr[pi3+2] = getB(j) >> 8;
-      }
-    }
-
-    applyColors(start, bufferOffset + view.pointCount);
-    bufferOffset += view.pointCount;
-    loadedPoints = bufferOffset;
-
-    pointGeo.setDrawRange(0, loadedPoints);
-    pointGeo.attributes.position.needsUpdate = true;
-
-    const pct = Math.round((loadedPoints / totalPoints) * 100);
-    const mPts = (loadedPoints / 1e6).toFixed(1);
-    loadingEl.textContent = `Loading ${pct}% — ${mPts}M pts`;
-
-    // Show UI after first node arrives so you see something immediately
-    if (!uiShown) {
-      uiShown = true;
-      document.getElementById('ui').style.display     = 'block';
-      document.getElementById('legend').style.display = 'block';
-      document.getElementById('title').textContent = 'LiDAR — Kullberg';
-    }
-
-    render();
-
-    // Yield to browser between nodes so the frame actually paints
-    await new Promise(r => setTimeout(r, 0));
+  if (tile.mesh) {
+    tile.mesh.geometry = tile.geo;
+  } else {
+    tile.mesh = new THREE.Points(
+      tile.geo,
+      new THREE.PointsMaterial({ vertexColors: true, size: 0.5, sizeAttenuation: true })
+    );
+    tile.mesh.frustumCulled = false;
+    tile.group.add(tile.mesh);
   }
 
-  loadingEl.style.display = 'none';
-  document.getElementById('pt-count').textContent = (totalPoints / 1e6).toFixed(2) + 'M';
+  if (oldGeo) oldGeo.dispose();
+}
 
-  // Build classification legend from classes actually present in this file
+function fillBuffer(tile, view) {
+  const n = view.pointCount;
+  ensureCapacity(tile, tile.loadedCount + n);
+
+  const getX   = view.getter('X');
+  const getY   = view.getter('Y');
+  const getZ   = view.getter('Z');
+  const getCls = view.getter('Classification');
+  const getR   = tile.hasRGB ? view.getter('Red')   : null;
+  const getG   = tile.hasRGB ? view.getter('Green') : null;
+  const getB   = tile.hasRGB ? view.getter('Blue')  : null;
+
+  const start = tile.loadedCount;
+  for (let j = 0; j < n; j++) {
+    const pi  = start + j;
+    const pi3 = pi * 3;
+    tile.posArr[pi3]   = getX(j) - coordOffset.x;
+    tile.posArr[pi3+1] = getY(j) - coordOffset.y;
+    tile.posArr[pi3+2] = getZ(j) - coordOffset.z;
+    tile.zArr[pi]   = getZ(j) - coordOffset.z;
+    const cls = getCls(j);
+    tile.clsArr[pi] = cls;
+    tile.seenClasses.add(cls);
+    if (tile.hasRGB) {
+      tile.rgbArr[pi3]   = getR(j) >> 8;
+      tile.rgbArr[pi3+1] = getG(j) >> 8;
+      tile.rgbArr[pi3+2] = getB(j) >> 8;
+    }
+  }
+
+  applyTileColors(tile, start, start + n);
+  tile.loadedCount += n;
+  tile.geo.setDrawRange(0, tile.loadedCount);
+  tile.geo.attributes.position.needsUpdate = true;
+  tile.geo.attributes.color.needsUpdate    = true;
+}
+
+// ── Load queue (max 4 concurrent) ────────────────────────────────────────────
+
+const loadQ = {
+  tasks:  [],
+  active: 0,
+  max:    4,
+  add(priority, fn) {
+    // Don't queue duplicate tile loads — just update priority
+    this.tasks.push({ priority, fn });
+    this.tasks.sort((a, b) => b.priority - a.priority);
+    this._pump();
+  },
+  _pump() {
+    while (this.active < this.max && this.tasks.length > 0) {
+      const { fn } = this.tasks.shift();
+      this.active++;
+      fn().finally(() => { this.active--; this._pump(); });
+    }
+  },
+};
+
+// ── LOD ───────────────────────────────────────────────────────────────────────
+
+// Returns the desired octree depth for a tile given the current camera state.
+// The heuristic: how large does the tile appear relative to the view distance?
+// A tile that fills the screen needs more detail than one in the distance.
+function computeTargetDepth(tile) {
+  const tileSize = tile.box.max.x - tile.box.min.x;
+  const cx = (tile.box.min.x + tile.box.max.x) / 2;
+  const cy = (tile.box.min.y + tile.box.max.y) / 2;
+  const dist2d = Math.hypot(target.x - cx, target.y - cy);
+  // Use whichever is larger: zoom radius or half the distance to centre —
+  // this way distant tiles don't demand the same detail as the one you're over.
+  const effective = Math.max(sph.r, dist2d * 0.5);
+  const screenRatio = tileSize / effective;
+
+  if (screenRatio < 0.25) return 0;
+  if (screenRatio < 0.6)  return 1;
+  if (screenRatio < 1.2)  return 2;
+  if (screenRatio < 2.5)  return 3;
+  return Math.min(4, tile.maxAvailDepth);
+}
+
+let lodTimer = null;
+function scheduleLODUpdate() {
+  clearTimeout(lodTimer);
+  lodTimer = setTimeout(updateLOD, 400);
+}
+
+function updateLOD() {
+  // Build current frustum once
+  camera.updateMatrixWorld();
+  const frustum = new THREE.Frustum().setFromProjectionMatrix(
+    new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
+  );
+
+  for (const tile of tileStates) {
+    if (!tile.box || tile.failed) continue;
+
+    const visible = frustum.intersectsBox(tile.box);
+    tile.group.visible = visible;
+
+    if (!visible || tile.loading) continue;
+
+    const want = Math.min(computeTargetDepth(tile), tile.maxAvailDepth);
+    tile.targetDepth = want;
+
+    if (tile.loadedDepth >= want) continue;
+
+    // Priority: depth-0 loads first (overview) then closer/deeper tiles
+    const priority = (want === 0 ? 200 : 100) - want * 10 - (tile.loadedDepth + 1) * 5;
+    loadQ.add(priority, () => loadNextDepth(tile));
+  }
+
+  updateStatusBar();
+}
+
+async function loadNextDepth(tile) {
+  if (tile.loading || tile.loadedDepth >= tile.targetDepth) return;
+  tile.loading = true;
+
+  try {
+    const depth = tile.loadedDepth + 1;
+    const nodes = tile.byDepth[depth] ?? [];
+
+    for (const node of nodes) {
+      if (!node.pointCount) continue;
+      const view = await Copc.loadPointDataView(tile.url, tile.copc, node, { lazPerf });
+      fillBuffer(tile, view);
+      updateStatusBar();
+      render();
+      await new Promise(r => setTimeout(r, 0));  // yield so frame paints
+    }
+
+    tile.loadedDepth = depth;
+  } catch (err) {
+    console.error('Load error:', tile.url, err);
+    tile.failed = true;
+  } finally {
+    tile.loading = false;
+  }
+
+  // Re-evaluate: need to go deeper after this depth completed?
+  if (!tile.failed && tile.loadedDepth < tile.targetDepth) {
+    updateLOD();
+  }
+}
+
+// ── Status bar ────────────────────────────────────────────────────────────────
+
+function updateStatusBar() {
+  const totalPts = tileStates.reduce((s, t) => s + t.loadedCount, 0);
+  const loading  = tileStates.filter(t => t.loading).length;
+  const el = document.getElementById('pt-count');
+  el.textContent = (totalPts / 1e6).toFixed(2) + 'M' + (loading ? ' ↓' : '');
+}
+
+// ── Tile header + hierarchy loading ───────────────────────────────────────────
+
+async function loadHeader(tile) {
+  try {
+    tile.copc = await Copc.create(tile.url);
+    tile.hasRGB = [2, 3, 7, 8].includes(tile.copc.header.pointDataRecordFormat);
+  } catch (err) {
+    console.error('Header failed:', tile.url, err);
+    tile.failed = true;
+  }
+}
+
+async function loadHierarchy(tile) {
+  if (tile.failed) return;
+  try {
+    const all = {};
+    async function loadPage(info) {
+      const { nodes, pages } = await Copc.loadHierarchyPage(tile.url, info);
+      Object.assign(all, nodes);
+      for (const sub of Object.values(pages ?? {})) await loadPage(sub);
+    }
+    await loadPage(tile.copc.info.rootHierarchyPage);
+
+    let maxD = 0;
+    for (const [key, node] of Object.entries(all)) {
+      if (!node.pointCount) continue;
+      const d = parseInt(key.split('-')[0]);
+      maxD = Math.max(maxD, d);
+      (tile.byDepth[d] ??= []).push(node);
+    }
+    tile.maxAvailDepth = maxD;
+  } catch (err) {
+    console.error('Hierarchy failed:', tile.url, err);
+    tile.failed = true;
+  }
+}
+
+// ── Tree layers ───────────────────────────────────────────────────────────────
+
+function loadTreeLayer(url, color, layerKey, countKey) {
+  fetch(url).then(r => r.json()).then(trees => {
+    const { x: ox, y: oy, z: oz } = coordOffset;
+    const group = new THREE.Group();
+
+    document.getElementById(countKey).textContent = trees.length.toLocaleString();
+
+    const positions = [];
+    for (const t of trees) {
+      positions.push(t.x - ox, t.y - oy, t.z_bottom - oz);
+      positions.push(t.x - ox, t.y - oy, t.z_top    - oz);
+    }
+    const lineGeo = new THREE.BufferGeometry();
+    lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    const lines = new THREE.LineSegments(
+      lineGeo,
+      new THREE.LineDashedMaterial({ color, dashSize: 0.5, gapSize: 0.25, scale: 2.0 })
+    );
+    lines.computeLineDistances();
+    group.add(lines);
+
+    const sphereGeo = new THREE.SphereGeometry(0.4, 8, 8);
+    const spheres   = new THREE.InstancedMesh(sphereGeo, new THREE.MeshBasicMaterial({ color }), trees.length);
+    const matrix    = new THREE.Matrix4();
+    trees.forEach((t, i) => {
+      matrix.setPosition(t.x - ox, t.y - oy, t.z_top - oz);
+      spheres.setMatrixAt(i, matrix);
+    });
+    spheres.instanceMatrix.needsUpdate = true;
+    group.add(spheres);
+
+    addLayer(layerKey, group);
+  });
+}
+
+// ── Classification legend (built once all tiles have loaded depth 0) ──────────
+
+let legendBuilt = false;
+function maybeUpdateClsLegend() {
+  if (legendBuilt) return;
+  if (tileStates.some(t => !t.failed && t.loadedDepth < 0)) return;  // not all at depth 0 yet
+
+  legendBuilt = true;
+  const seen = new Set();
+  for (const tile of tileStates) for (const cls of tile.seenClasses) seen.add(cls);
+
   const clsLegend = document.getElementById('cls-legend');
-  const sorted = [...seenClasses].sort((a, b) => a - b);
-  for (const cls of sorted) {
+  for (const cls of [...seen].sort((a, b) => a - b)) {
     if (cls > 18) continue;
     const c = cls * 3;
     const hex = '#' + [CLS_RGB[c], CLS_RGB[c+1], CLS_RGB[c+2]]
@@ -584,62 +720,80 @@ async function loadCopc() {
   }
 }
 
-// ── Tree layers ───────────────────────────────────────────────────────────────
-
-function loadTreeLayer(url, color, layerKey, countKey) {
-  fetch(url)
-    .then(r => r.json())
-    .then(trees => {
-      const { x: ox, y: oy, z: oz } = coordOffset;
-      const group = new THREE.Group();
-
-      document.getElementById(countKey).textContent = trees.length.toLocaleString();
-
-      const positions = [];
-      for (const t of trees) {
-        positions.push(t.x - ox, t.y - oy, t.z_bottom - oz);
-        positions.push(t.x - ox, t.y - oy, t.z_top    - oz);
-      }
-      const lineGeo = new THREE.BufferGeometry();
-      lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-      const lines = new THREE.LineSegments(
-        lineGeo,
-        new THREE.LineDashedMaterial({ color, dashSize: 0.5, gapSize: 0.25, scale: 2.0 })
-      );
-      lines.computeLineDistances();
-      group.add(lines);
-
-      const sphereGeo = new THREE.SphereGeometry(0.4, 8, 8);
-      const spheres   = new THREE.InstancedMesh(sphereGeo, new THREE.MeshBasicMaterial({ color }), trees.length);
-      const matrix    = new THREE.Matrix4();
-      trees.forEach((t, i) => {
-        matrix.setPosition(t.x - ox, t.y - oy, t.z_top - oz);
-        spheres.setMatrixAt(i, matrix);
-      });
-      spheres.instanceMatrix.needsUpdate = true;
-      group.add(spheres);
-
-      addLayer(layerKey, group);
-    });
-}
-
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
-// Trees share the same coordinate offset as the point cloud.
-// This promise resolves once the COPC header has been parsed and coordOffset set.
-let resolveOffset;
-const offsetReady = new Promise(r => { resolveOffset = r; });
+async function init() {
+  const loadingEl = document.getElementById('loading');
 
-loadCopc().catch(err => {
-  document.getElementById('loading').textContent = 'Error: ' + err.message;
-  console.error(err);
-});
+  lazPerf = await Las.PointData.createLazPerf({ locateFile: f => '/' + f });
+
+  const tileFiles = await fetch('tiles.json').then(r => r.json());
+  tileStates = tileFiles.map(makeTile);
+
+  // All tile groups under one scene group so the layer toggle works
+  const tilesGroup = new THREE.Group();
+  for (const tile of tileStates) tilesGroup.add(tile.group);
+  addLayer('pointCloud', tilesGroup);
+
+  loadingEl.textContent = 'Loading tile headers…';
+  await Promise.allSettled(tileStates.map(loadHeader));
+
+  // Compute global coordinate offset from union of all tile bounds
+  let gMinX =  Infinity, gMinY =  Infinity, gMinZ =  Infinity;
+  let gMaxX = -Infinity, gMaxY = -Infinity, gMaxZ = -Infinity;
+  for (const tile of tileStates) {
+    if (tile.failed || !tile.copc) continue;
+    const { min, max } = tile.copc.header;
+    gMinX = Math.min(gMinX, min[0]); gMaxX = Math.max(gMaxX, max[0]);
+    gMinY = Math.min(gMinY, min[1]); gMaxY = Math.max(gMaxY, max[1]);
+    gMinZ = Math.min(gMinZ, min[2]); gMaxZ = Math.max(gMaxZ, max[2]);
+  }
+
+  coordOffset.x = (gMinX + gMaxX) / 2;
+  coordOffset.y = (gMinY + gMaxY) / 2;
+  coordOffset.z = gMinZ;
+  globalZMin = 0;
+  globalZMax = gMaxZ - gMinZ;
+  resolveOffset();  // unblocks tree loading
+
+  for (const tile of tileStates) {
+    if (tile.failed || !tile.copc) continue;
+    const { min, max } = tile.copc.header;
+    tile.box = new THREE.Box3(
+      new THREE.Vector3(min[0] - coordOffset.x, min[1] - coordOffset.y, min[2] - coordOffset.z),
+      new THREE.Vector3(max[0] - coordOffset.x, max[1] - coordOffset.y, max[2] - coordOffset.z)
+    );
+  }
+
+  target.set(0, 0, (gMaxZ - gMinZ) * 0.35);
+  sph.r = Math.max(gMaxX - gMinX, gMaxY - gMinY) * 0.9;
+
+  document.getElementById('z-max').textContent = Math.round(gMaxZ) + ' m';
+  document.getElementById('z-min').textContent = Math.round(gMinZ) + ' m';
+
+  const anyRGB = tileStates.some(t => t.hasRGB);
+  document.getElementById('btn-rgb').style.display = anyRGB ? '' : 'none';
+
+  loadingEl.textContent = 'Loading tile hierarchies…';
+  await Promise.allSettled(tileStates.map(loadHierarchy));
+
+  loadingEl.style.display = 'none';
+  document.getElementById('ui').style.display     = 'block';
+  document.getElementById('legend').style.display = 'block';
+
+  updateLOD();
+  render();
+}
 
 offsetReady.then(() => {
   loadTreeLayer('trees_p2r.json',     0xff2222, 'p2r',     'p2r-count');
   loadTreeLayer('trees_pitfree.json', 0x22ff22, 'pitfree', 'pitfree-count');
 });
 
+init().catch(err => {
+  document.getElementById('loading').textContent = 'Error: ' + err.message;
+  console.error(err);
+});
 </script>
 </body>
 </html>
