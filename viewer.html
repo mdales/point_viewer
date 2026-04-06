@@ -467,7 +467,7 @@ document.getElementById('home-btn').addEventListener('click', () => {
   sph    = { ...defaults.sph };
   target = new THREE.Vector3(defaults.target.x, defaults.target.y, defaults.target.z);
   scheduleLODUpdate();
-  scheduleURLUpdate();
+  history.replaceState(null, '', window.location.pathname);
   render();
 });
 
@@ -521,6 +521,7 @@ function saveCameraToURL() {
 const fmt = v => Math.round(v * 100) / 100;
 
 ['mouseup', 'touchend'].forEach(ev => window.addEventListener(ev, () => {
+  if (!drag) return;
   drag = false;
   scheduleURLUpdate();
 }));
