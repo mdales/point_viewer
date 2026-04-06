@@ -464,7 +464,27 @@ renderer.domElement.addEventListener('touchstart', e => {
   drag = true;
 });
 
-['mouseup', 'touchend'].forEach(ev => window.addEventListener(ev, () => drag = false));
+function loadCameraFromURL() {
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  const s = params.get('s')?.split(',').map(Number);
+  const t = params.get('t')?.split(',').map(Number);
+  if (s?.length === 3) {sph.theta = s[0]; sph.phi = s[1]; sph.r = s[2];};
+  if (t?.length === 3) target.set(...t);
+}
+
+function saveCameraToURL() {
+  const s = sph;
+  const t = target;
+  const hash = `s=${fmt(s.theta)},${fmt(s.phi)},${fmt(s.r)}&t=${fmt(t.x)},${fmt(t.y)},${fmt(t.z)}`;
+  history.replaceState(null, '', '#' + hash);
+}
+
+const fmt = v => Math.round(v * 100) / 100;
+
+['mouseup', 'touchend'].forEach(ev => window.addEventListener(ev, () => {
+  drag = false;
+  scheduleURLUpdate();
+}));
 
 window.addEventListener('mousemove', e => {
   if (!drag) return;
@@ -493,6 +513,7 @@ window.addEventListener('touchmove', e => {
 renderer.domElement.addEventListener('wheel', e => {
   sph.r = Math.max(5, Math.min(50000, sph.r * (1 + e.deltaY * 0.001)));
   scheduleLODUpdate();
+  scheduleURLUpdate();
   render();
 }, { passive: true });
 
@@ -790,6 +811,12 @@ function scheduleLODUpdate() {
   lodTimer = setTimeout(updateLOD, 400);
 }
 
+let zoomTimer = null;
+function scheduleURLUpdate() {
+  clearTimeout(zoomTimer);
+  zoomTimer = setTimeout(saveCameraToURL, 1000);
+}
+
 function updateLOD() {
   camera.updateMatrixWorld();
   updateGroundFocus();
@@ -1037,6 +1064,8 @@ async function init() {
   loadingEl.style.display = 'none';
   document.getElementById('ui').style.display     = 'block';
   document.getElementById('legend').style.display = 'block';
+
+  loadCameraFromURL();
 
   updateLOD();
   render();
