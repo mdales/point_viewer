@@ -244,17 +244,17 @@
     Points — <span id="pt-count">—</span>
   </label>
   <label class="layer-toggle">
-    <input type="checkbox" data-layer="p2r">
+    <input id="p2r-check" type="checkbox" data-layer="p2r">
     <span class="swatch" style="background:#f44"></span>
     Trees (p2r) — <span id="p2r-count"></span>
   </label>
   <label class="layer-toggle">
-    <input type="checkbox" data-layer="pitfree">
+    <input id="pitfree-check" type="checkbox" data-layer="pitfree">
     <span class="swatch" style="background:#4f4"></span>
     Trees (pit-free) — <span id="pitfree-count"></span>
   </label>
   <label class="layer-toggle">
-    <input type="checkbox" data-layer="cameras">
+    <input id="cameras-check" type="checkbox" data-layer="cameras">
     <span class="swatch" style="background:#ff4"></span>
     DSÄ kameror — <span id="cameras-count"></span>
   </label>
@@ -507,14 +507,23 @@ function loadCameraFromURL() {
   const params = new URLSearchParams(window.location.hash.slice(1));
   const s = params.get('s')?.split(',').map(Number);
   const t = params.get('t')?.split(',').map(Number);
+  const toggles = params.get('o')?.split(',').map(Number);
   if (s?.length === 3) {sph.theta = s[0]; sph.phi = s[1]; sph.r = s[2];};
   if (t?.length === 3) target.set(...t);
+  if (toggles?.length === 3) {
+    document.getElementById('p2r-check').checked = toggles[0] === 1;
+    document.getElementById('pitfree-check').checked = toggles[1] === 1;
+    document.getElementById('cameras-check').checked = toggles[2] === 1;
+  };
 }
 
 function saveCameraToURL() {
   const s = sph;
   const t = target;
-  const hash = `s=${fmt(s.theta)},${fmt(s.phi)},${fmt(s.r)}&t=${fmt(t.x)},${fmt(t.y)},${fmt(t.z)}`;
+  const toggles = ['p2r-check', 'pitfree-check', 'cameras-check'].map(lbl =>
+    document.getElementById(lbl).checked ? '1' : '0'
+  );
+  const hash = `s=${fmt(s.theta)},${fmt(s.phi)},${fmt(s.r)}&t=${fmt(t.x)},${fmt(t.y)},${fmt(t.z)}&o=${toggles[0]},${toggles[1]},${toggles[2]}`;
   history.replaceState(null, '', '#' + hash);
 }
 
