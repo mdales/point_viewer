@@ -75,20 +75,6 @@
     .cm-btn:hover { background: rgba(255,255,255,0.1); }
     .cm-btn.active { background: #31c884; color: #000; border-color: #31c884; }
 
-    #about-btn {
-      position: absolute;
-      bottom: 16px;
-      left: 16px;
-      font-family: monospace;
-      font-size: 11px;
-      color: #aaa;
-      background: none;
-      border: none;
-      cursor: pointer;
-      padding: 0;
-    }
-    #about-btn:hover { color: #aaa; }
-
     #about-overlay {
       display: none;
       position: absolute;
@@ -165,12 +151,30 @@
       font-size: 14px;
       text-align: center;
     }
+
+    #navcontrols {
+      display: flex;
+      flex-direction: row;
+      gap: 0.75rem;
+      align-items: center;
+    }
+
+    .icon {
+      pointer-events: all;
+      display: block;
+      cursor: pointer;
+      opacity: 0.7;
+      transition: opacity 0.15s;
+    }
+    .icon:hover { opacity: 1; }
+
+    .hidden-btn {
+      display: none;
+    }
   </style>
 </head>
 <body>
 <div id="loading">Initialising…</div>
-
-<button id="about-btn">about</button>
 
 <div id="about-overlay">
   <div id="about-box">
@@ -201,9 +205,10 @@
       <a href="https://github.com/mdapes/points_viewer/" target="_blank" rel="noopener">Source code on GitHub</a>
     </p>
 
-    <p style="font-size:11px; color:#666; line-height:1.6;">
+    <p style="color:#666; line-height:1.6;">
       LiDAR: <a href="https://www.lantmateriet.se/sv/geodata/vara-produkter/produktlista/laserdata-nedladdning-skog/" target="_blank" rel="noopener">Lantmäteriet Laserdata Skog</a> — CC0<br>
-      Land cover: <a href="https://geodatakatalogen.naturvardsverket.se/geonetwork/srv/swe/catalog.search#/metadata/0f1a86d5-d578-44bd-957e-3dcdb0b34ba0" target="_blank" rel="noopener">Naturvårdsverket NMD 2018</a> — Europa No Limits
+      Land cover: <a href="https://geodatakatalogen.naturvardsverket.se/geonetwork/srv/swe/catalog.search#/metadata/0f1a86d5-d578-44bd-957e-3dcdb0b34ba0" target="_blank" rel="noopener">Naturvårdsverket NMD 2018</a> — Europa No Limits<br>
+      Icons: <a href="https://lucide.dev">Lucide</a> - ISC
     </p>
   </div>
 </div>
@@ -212,7 +217,18 @@
   <strong id="title">LiDAR — Kullberg</strong><br><br>
   drag · pan<br>
   right-drag · rotate<br>
-  scroll · zoom
+  scroll · zoom<br><br>
+
+  <div id="navcontrols">
+
+    <svg class="icon" id="about-btn" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-info-icon lucide-info"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+
+    <svg class="icon" id="home-btn" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-house-icon lucide-house"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+
+    <svg class="icon" id="share-btn" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-share-icon lucide-share"><path d="M12 2v13"/><path d="m16 6-4-4-4 4"/><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/></svg>
+    <svg class="icon hidden-btn" id="shared-btn" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-check-icon lucide-check"><path d="M20 6 9 17l-5-5"/></svg>
+  </div>
+
 </div>
 
 <div id="layers">
@@ -336,6 +352,11 @@ document.body.appendChild(renderer.domElement);
 
 // ── Camera controls ───────────────────────────────────────────────────────────
 
+let defaults = {
+  sph: { theta: 0.4, phi: 0.5, r: 1000 },
+  target: new THREE.Vector3(),
+};
+
 let sph    = { theta: 0.4, phi: 0.5, r: 1000 };
 let target = new THREE.Vector3();
 let drag = false, rightDrag = false, prev = { x: 0, y: 0 };
@@ -441,6 +462,24 @@ const aboutOverlay = document.getElementById('about-overlay');
 document.getElementById('about-btn').addEventListener('click', () => aboutOverlay.classList.add('open'));
 document.getElementById('about-close').addEventListener('click', () => aboutOverlay.classList.remove('open'));
 aboutOverlay.addEventListener('click', e => { if (e.target === aboutOverlay) aboutOverlay.classList.remove('open'); });
+
+document.getElementById('home-btn').addEventListener('click', () => {
+  sph    = { ...defaults.sph };
+  target = new THREE.Vector3(defaults.target.x, defaults.target.y, defaults.target.z);
+  scheduleLODUpdate();
+  scheduleURLUpdate();
+  render();
+});
+
+document.getElementById('share-btn').addEventListener('click', async () => {
+  await navigator.clipboard.writeText(window.location.href);
+  document.getElementById('share-btn').classList.add('hidden-btn');
+  document.getElementById('shared-btn').classList.remove('hidden-btn');
+  setTimeout(() => {
+    document.getElementById('shared-btn').classList.add('hidden-btn');
+    document.getElementById('share-btn').classList.remove('hidden-btn');
+  }, 1500);
+});
 
 renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
 
@@ -1050,7 +1089,9 @@ async function init() {
   }
 
   target.set(0, 0, (gMaxZ - gMinZ) * 0.35);
+  defaults.target.set(0, 0, (gMaxZ - gMinZ) * 0.35);
   sph.r = Math.max(gMaxX - gMinX, gMaxY - gMinY) * 0.9;
+  defaults.sph.r = sph.r;
 
   document.getElementById('z-max').textContent = Math.round(gMaxZ) + ' m';
   document.getElementById('z-min').textContent = Math.round(gMinZ) + ' m';
