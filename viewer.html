@@ -181,7 +181,7 @@
       <!-- English description -->
       This website shows LiDAR data from Kullberg near Junsele in Sollefteå, northern Sweden. It is built upon open data from Lantmäteriet och Naturvårdsverket.
 
-      Up in the top right there are controls where you can choose between different data visualisations. "Trees (p2r)" and "Trees (pitfree)" are different ways to estimate where the trees stand.
+      Up in the top right there are controls where you can choose between different data visualisations. "Trees (p2r)" and "Trees (pitfree)" are different ways to estimate where the trees stand. "DSÄ kameror" shows the position of the cameras used in SVT's <a href="https://www.svtplay.se/den-stora-algvandringen">Great Moose Migration</a>.
 
       You can read more on my weeknotes below.
     </p>
@@ -189,7 +189,7 @@
       <!-- Swedish description -->
       Den här webbplatset visar LiDAR-data från Kullberg nära Junsele i Sollefteå, Västernorrland. Det är gjort på öppna data från Lantmäteriet och Naturvårdsverket.
 
-      Uppe till höger finns kontrollerna dar ni kan välja olika datavisualiseringar. "Trees (p2r)" och "Trees (pitfree)" visar annorlunda sätt att beräkna var träd står.
+      Uppe till höger finns kontrollerna dar ni kan välja olika datavisualiseringar. "Trees (p2r)" och "Trees (pitfree)" visar annorlunda sätt att beräkna var träd står. "DSÄ kameror" visar var kamerorna ligger på SVT:s <a href="https://www.svtplay.se/den-stora-algvandringen">Den Stora Älgvandringen</a>.
 
       Ni kan läsa mer på mitt webbplats här under.
     </p>
@@ -236,6 +236,11 @@
     <input type="checkbox" data-layer="pitfree">
     <span class="swatch" style="background:#4f4"></span>
     Trees (pit-free) — <span id="pitfree-count"></span>
+  </label>
+  <label class="layer-toggle">
+    <input type="checkbox" data-layer="cameras">
+    <span class="swatch" style="background:#ff4"></span>
+    DSÄ kameror — <span id="cameras-count"></span>
   </label>
 </div>
 
@@ -907,7 +912,7 @@ async function loadHierarchy(tile) {
 
 // ── Tree layers ───────────────────────────────────────────────────────────────
 
-function loadTreeLayer(url, color, layerKey, countKey) {
+function loadTreeLayer(url, color, layerKey, countKey, scale) {
   fetch(url).then(r => r.json()).then(trees => {
     const { x: ox, y: oy, z: oz } = coordOffset;
     const group = new THREE.Group();
@@ -923,12 +928,12 @@ function loadTreeLayer(url, color, layerKey, countKey) {
     lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     const lines = new THREE.LineSegments(
       lineGeo,
-      new THREE.LineDashedMaterial({ color, dashSize: 0.5, gapSize: 0.25, scale: 2.0 })
+      new THREE.LineDashedMaterial({ color, dashSize: 0.5, gapSize: 0.25, scale: scale })
     );
     lines.computeLineDistances();
     group.add(lines);
 
-    const sphereGeo = new THREE.SphereGeometry(0.4, 8, 8);
+    const sphereGeo = new THREE.SphereGeometry(0.2 * scale, 8, 8);
     const spheres   = new THREE.InstancedMesh(sphereGeo, new THREE.MeshBasicMaterial({ color }), trees.length);
     const matrix    = new THREE.Matrix4();
     trees.forEach((t, i) => {
@@ -1038,8 +1043,9 @@ async function init() {
 }
 
 offsetReady.then(() => {
-  loadTreeLayer('trees_p2r.json',     0xff2222, 'p2r',     'p2r-count');
-  loadTreeLayer('trees_pitfree.json', 0x22ff22, 'pitfree', 'pitfree-count');
+  loadTreeLayer('trees_p2r.json',     0xff2222, 'p2r',     'p2r-count',     2.0);
+  loadTreeLayer('trees_pitfree.json', 0x22ff22, 'pitfree', 'pitfree-count', 2.0);
+  loadTreeLayer('cameras.json',       0xffff22, 'cameras', 'cameras-count', 10.0);
 });
 
 init().catch(err => {
