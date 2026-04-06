@@ -244,17 +244,17 @@
     Points — <span id="pt-count">—</span>
   </label>
   <label class="layer-toggle">
-    <input id="p2r-check" type="checkbox" data-layer="p2r">
+    <input class="tracked-checkbox" id="p2r-check" type="checkbox" data-layer="p2r">
     <span class="swatch" style="background:#f44"></span>
     Trees (p2r) — <span id="p2r-count"></span>
   </label>
   <label class="layer-toggle">
-    <input id="pitfree-check" type="checkbox" data-layer="pitfree">
+    <input class="tracked-checkbox" id="pitfree-check" type="checkbox" data-layer="pitfree">
     <span class="swatch" style="background:#4f4"></span>
     Trees (pit-free) — <span id="pitfree-count"></span>
   </label>
   <label class="layer-toggle">
-    <input id="cameras-check" type="checkbox" data-layer="cameras">
+    <input class="tracked-checkbox" id="cameras-check" type="checkbox" data-layer="cameras">
     <span class="swatch" style="background:#ff4"></span>
     DSÄ kameror — <span id="cameras-count"></span>
   </label>
@@ -503,6 +503,10 @@ renderer.domElement.addEventListener('touchstart', e => {
   drag = true;
 });
 
+document.querySelectorAll('.tracked-checkbox').forEach(cb => {
+  cb.addEventListener('change', saveCameraToURL);
+});
+
 function loadCameraFromURL() {
   const params = new URLSearchParams(window.location.hash.slice(1));
   const s = params.get('s')?.split(',').map(Number);
@@ -515,6 +519,12 @@ function loadCameraFromURL() {
     document.getElementById('pitfree-check').checked = toggles[1] === 1;
     document.getElementById('cameras-check').checked = toggles[2] === 1;
   };
+  if (params.has('cm')) {
+    colorMode = params.get('cm');
+    document.querySelectorAll('.cm-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.mode === colorMode);
+    });
+  }
 }
 
 function saveCameraToURL() {
@@ -523,7 +533,7 @@ function saveCameraToURL() {
   const toggles = ['p2r-check', 'pitfree-check', 'cameras-check'].map(lbl =>
     document.getElementById(lbl).checked ? '1' : '0'
   );
-  const hash = `s=${fmt(s.theta)},${fmt(s.phi)},${fmt(s.r)}&t=${fmt(t.x)},${fmt(t.y)},${fmt(t.z)}&o=${toggles[0]},${toggles[1]},${toggles[2]}`;
+  const hash = `s=${fmt(s.theta)},${fmt(s.phi)},${fmt(s.r)}&t=${fmt(t.x)},${fmt(t.y)},${fmt(t.z)}&o=${toggles[0]},${toggles[1]},${toggles[2]}&cm=${colorMode}`;
   history.replaceState(null, '', '#' + hash);
 }
 
@@ -703,6 +713,7 @@ document.querySelectorAll('.cm-btn').forEach(btn => {
     document.getElementById('cls-legend').style.display    = colorMode === 'classification'  ? '' : 'none';
     document.getElementById('lc-legend').style.display     = colorMode === 'landcover'       ? '' : 'none';
     recolorAll();
+    saveCameraToURL();
   });
 });
 
